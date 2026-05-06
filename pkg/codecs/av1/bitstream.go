@@ -4,63 +4,55 @@ import (
 	"fmt"
 )
 
-func obuRemoveSize(h *OBUHeader, sizeN int, ob []byte) []byte {
-	newOBU := make([]byte, len(ob)-sizeN)
-	newOBU[0] = (byte(h.Type) << 3)
-	copy(newOBU[1:], ob[1+sizeN:])
-	return newOBU
-}
+// Bitstream is an AV1 bitstream.
+// Specification: AV1 Bitstream & Decoding Process, section 5.2
+type Bitstream [][]byte
 
-// BitstreamUnmarshal extracts a temporal unit from a bitstream.
-// Optionally, it also removes the size field from OBUs.
-// Specification: https://aomediacodec.github.io/av1-spec/#low-overhead-bitstream-format
-func BitstreamUnmarshal(bs []byte, removeSizeField bool) ([][]byte, error) {
-	var ret [][]byte
-
+// Unmarshal decodes a Bitstream.
+func (bs *Bitstream) Unmarshal(buf []byte) error {
 	for {
 		var h OBUHeader
-		err := h.Unmarshal(bs)
+		err := h.Unmarshal(buf)
 		if err != nil {
-			return nil, err
+			return err
 		}
 
 		if !h.HasSize {
-			return nil, fmt.Errorf("OBU size not present")
+			return fmt.Errorf("OBU size not present")
 		}
 
-		size, sizeN, err := LEB128Unmarshal(bs[1:])
+		var size LEB128
+		n, err := size.Unmarshal(buf[1:])
 		if err != nil {
-			return nil, err
+			return err
 		}
 
-		obuLen := 1 + sizeN + int(size)
-		if len(bs) < obuLen {
-			return nil, fmt.Errorf("not enough bytes")
+		obuAndSizeLen := 1 + int(size) + n
+		if len(buf) < obuAndSizeLen {
+			return fmt.Errorf("not enough bytes")
 		}
 
-		obu := bs[:obuLen]
+		obu := make([]byte, 1+int(size))
+		obu[0] = buf[0] & 0b11111101
+		copy(obu[1:], buf[1+n:])
 
-		if removeSizeField {
-			obu = obuRemoveSize(&h, sizeN, obu)
-		}
+		buf = buf[obuAndSizeLen:]
 
-		ret = append(ret, obu)
-		bs = bs[obuLen:]
+		*bs = append(*bs, obu)
 
-		if len(bs) == 0 {
+		if len(buf) == 0 {
 			break
 		}
 	}
 
-	return ret, nil
+	return nil
 }
 
-// BitstreamMarshal encodes a temporal unit into a bitstream.
-// Specification: https://aomediacodec.github.io/av1-spec/#low-overhead-bitstream-format
-func BitstreamMarshal(tu [][]byte) ([]byte, error) {
+// Marshal encodes a Bitstream.
+func (bs Bitstream) Marshal() ([]byte, error) {
 	n := 0
 
-	for _, obu := range tu {
+	for _, obu := range bs {
 		n += len(obu)
 
 		var h OBUHeader
@@ -71,14 +63,14 @@ func BitstreamMarshal(tu [][]byte) ([]byte, error) {
 
 		if !h.HasSize {
 			size := len(obu) - 1
-			n += LEB128MarshalSize(uint(size))
+			n += LEB128(uint32(size)).MarshalSize()
 		}
 	}
 
 	buf := make([]byte, n)
 	n = 0
 
-	for _, obu := range tu {
+	for _, obu := range bs {
 		var h OBUHeader
 		h.Unmarshal(obu) //nolint:errcheck
 
@@ -86,8 +78,10 @@ func BitstreamMarshal(tu [][]byte) ([]byte, error) {
 			buf[n] = obu[0] | 0b00000010
 			n++
 			size := len(obu) - 1
-			n += LEB128MarshalTo(uint(size), buf[n:])
+			n += LEB128(uint32(size)).MarshalTo(buf[n:])
 			n += copy(buf[n:], obu[1:])
+		} else {
+			n += copy(buf[n:], obu)
 		}
 	}
 

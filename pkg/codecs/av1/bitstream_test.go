@@ -9,7 +9,7 @@ import (
 var casesBitstream = []struct {
 	name string
 	enc  []byte
-	dec  [][]byte
+	dec  Bitstream
 }{
 	{
 		"standard",
@@ -35,7 +35,8 @@ var casesBitstream = []struct {
 func TestBitstreamUnmarshal(t *testing.T) {
 	for _, ca := range casesBitstream {
 		t.Run(ca.name, func(t *testing.T) {
-			dec, err := BitstreamUnmarshal(ca.enc, true)
+			var dec Bitstream
+			err := dec.Unmarshal(ca.enc)
 			require.NoError(t, err)
 			require.Equal(t, ca.dec, dec)
 		})
@@ -45,15 +46,53 @@ func TestBitstreamUnmarshal(t *testing.T) {
 func TestBitstreamMarshal(t *testing.T) {
 	for _, ca := range casesBitstream {
 		t.Run(ca.name, func(t *testing.T) {
-			enc, err := BitstreamMarshal(ca.dec)
+			enc, err := ca.dec.Marshal()
 			require.NoError(t, err)
 			require.Equal(t, ca.enc, enc)
 		})
 	}
 }
 
+func TestBitstreamMarshalOBUsWithSize(t *testing.T) {
+	enc, err := Bitstream([][]byte{
+		{
+			0x0a, 0x0e, 0x00, 0x00, 0x00, 0x4a, 0xab, 0xbf,
+			0xc3, 0x77, 0x6b, 0xe4, 0x40, 0x40, 0x40, 0x41,
+		},
+		{
+			0x0a, 0x0e, 0x00, 0x00, 0x00, 0x4a, 0xab, 0xbf,
+			0xc3, 0x77, 0x6b, 0xe4, 0x40, 0x40, 0x40, 0x41,
+		},
+	}).Marshal()
+	require.NoError(t, err)
+
+	require.Equal(t, []byte{
+		0x0a, 0x0e, 0x00, 0x00, 0x00, 0x4a, 0xab, 0xbf,
+		0xc3, 0x77, 0x6b, 0xe4, 0x40, 0x40, 0x40, 0x41,
+		0x0a, 0x0e, 0x00, 0x00, 0x00, 0x4a, 0xab, 0xbf,
+		0xc3, 0x77, 0x6b, 0xe4, 0x40, 0x40, 0x40, 0x41,
+	}, enc)
+}
+
 func FuzzBitstreamUnmarshal(f *testing.F) {
-	f.Fuzz(func(_ *testing.T, b []byte) {
-		BitstreamUnmarshal(b, true) //nolint:errcheck
+	for _, ca := range casesBitstream {
+		f.Add(ca.enc)
+	}
+
+	f.Fuzz(func(t *testing.T, b []byte) {
+		var tu Bitstream
+		err := tu.Unmarshal(b)
+		if err != nil {
+			return
+		}
+
+		require.NotZero(t, len(tu))
+
+		for _, obu := range tu {
+			require.NotZero(t, len(obu))
+		}
+
+		_, err = tu.Marshal()
+		require.NoError(t, err)
 	})
 }

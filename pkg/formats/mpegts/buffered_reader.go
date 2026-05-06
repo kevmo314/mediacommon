@@ -6,6 +6,8 @@ import (
 )
 
 // BufferedReader is a buffered reader optimized for MPEG-TS.
+//
+// Deprecated: not needed anymore.
 type BufferedReader struct {
 	r         io.Reader
 	midbuf    []byte
@@ -13,6 +15,8 @@ type BufferedReader struct {
 }
 
 // NewBufferedReader allocates a BufferedReader.
+//
+// Deprecated: not needed anymore.
 func NewBufferedReader(r io.Reader) *BufferedReader {
 	return &BufferedReader{
 		r:      r,
@@ -33,8 +37,8 @@ func (r *BufferedReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 
-	if (mn % 188) != 0 {
-		return 0, fmt.Errorf("received packet with size %d not multiple of 188", mn)
+	if (mn % packetSize) != 0 {
+		return 0, fmt.Errorf("received packet with size %d not multiple of %d", mn, packetSize)
 	}
 
 	r.midbuf = r.midbuf[:mn]

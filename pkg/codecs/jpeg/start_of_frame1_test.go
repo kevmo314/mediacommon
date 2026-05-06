@@ -1,4 +1,4 @@
-package jpeg
+package jpeg //nolint:revive
 
 import (
 	"testing"
@@ -49,6 +49,10 @@ func TestStartOfFrame1Marshal(t *testing.T) {
 }
 
 func FuzzStartOfFrame1Unmarshal(f *testing.F) {
+	for _, ca := range casesStartOfFrame1 {
+		f.Add(ca.enc)
+	}
+
 	f.Fuzz(func(_ *testing.T, b []byte) {
 		var h StartOfFrame1
 		h.Unmarshal(b) //nolint:errcheck

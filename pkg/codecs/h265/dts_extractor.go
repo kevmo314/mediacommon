@@ -1,27 +1,22 @@
 package h265
 
 import (
+	"bytes"
 	"fmt"
 	"math"
-	"time"
 
-	"github.com/bluenviron/mediacommon/pkg/bits"
-	"github.com/bluenviron/mediacommon/pkg/codecs/h264"
+	"github.com/bluenviron/mediacommon/v2/pkg/bits"
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 )
 
 const (
 	maxBytesToGetPOC = 12
 )
 
-func getPTSDTSDiff(buf []byte, sps *SPS, pps *PPS) (uint32, error) {
+func getPTSDTSDiff(buf []byte, sps *SPS, pps *PPS) (int, error) {
 	typ := NALUType((buf[0] >> 1) & 0b111111)
-
 	buf = buf[1:]
-	lb := len(buf)
-
-	if lb > maxBytesToGetPOC {
-		lb = maxBytesToGetPOC
-	}
+	lb := min(len(buf), maxBytesToGetPOC)
 
 	buf = h264.EmulationPreventionRemove(buf[:lb])
 	pos := 8
@@ -36,10 +31,7 @@ func getPTSDTSDiff(buf []byte, sps *SPS, pps *PPS) (uint32, error) {
 	}
 
 	if typ >= NALUType_BLA_W_LP && typ <= NALUType_RSV_IRAP_VCL23 {
-		_, err = bits.ReadFlag(buf, &pos) // no_output_of_prior_pics_flag
-		if err != nil {
-			return 0, err
-		}
+		pos++ // no_output_of_prior_pics_flag
 	}
 
 	_, err = bits.ReadGolombUnsigned(buf, &pos) // slice_pic_parameter_set_id
@@ -88,17 +80,19 @@ func getPTSDTSDiff(buf []byte, sps *SPS, pps *PPS) (uint32, error) {
 
 	if !shortTermRefPicSetSpsFlag {
 		rps = &SPS_ShortTermRefPicSet{}
-		err = rps.unmarshal(buf, &pos, uint32(len(sps.ShortTermRefPicSets)), uint32(len(sps.ShortTermRefPicSets)), nil)
+		err = rps.unmarshal(buf, &pos, uint32(len(sps.ShortTermRefPicSets)),
+			uint32(len(sps.ShortTermRefPicSets)), sps.ShortTermRefPicSets)
 		if err != nil {
 			return 0, err
 		}
 	} else {
-		if len(sps.ShortTermRefPicSets) == 0 {
-			return 0, fmt.Errorf("invalid short_term_ref_pic_set_idx")
+		if len(sps.ShortTermRefPicSets) <= 1 {
+			return 0, nil
 		}
 
 		b := int(math.Ceil(math.Log2(float64(len(sps.ShortTermRefPicSets)))))
-		tmp, err := bits.ReadBits(buf, &pos, b)
+		var tmp uint64
+		tmp, err = bits.ReadBits(buf, &pos, b)
 		if err != nil {
 			return 0, err
 		}
@@ -111,68 +105,106 @@ func getPTSDTSDiff(buf []byte, sps *SPS, pps *PPS) (uint32, error) {
 		rps = sps.ShortTermRefPicSets[shortTermRefPicSetIdx]
 	}
 
-	var v uint32
-
 	if sliceType == 0 { // B-frame
-		if typ == NALUType_TRAIL_N || typ == NALUType_RASL_N {
-			v = sps.MaxNumReorderPics[0] - uint32(len(rps.DeltaPocS1Minus1))
-		} else if typ == NALUType_TRAIL_R || typ == NALUType_RASL_R {
-			if len(rps.DeltaPocS0Minus1) == 0 {
-				return 0, fmt.Errorf("invalid delta_poc_s0_minus1")
+		switch typ {
+		case NALUType_TRAIL_N, NALUType_RASL_N:
+			return -len(rps.DeltaPocS1), nil
+
+		case NALUType_TRAIL_R, NALUType_RASL_R:
+			if len(rps.DeltaPocS0) == 0 {
+				return 0, fmt.Errorf("invalid DeltaPocS0")
 			}
-			v = rps.DeltaPocS0Minus1[0] + sps.MaxNumReorderPics[0] - 1
+			return int(-rps.DeltaPocS0[0]-1) - len(rps.DeltaPocS1), nil
+
+		default:
+			return 0, nil
 		}
 	} else { // I or P-frame
-		if len(rps.DeltaPocS0Minus1) == 0 {
-			return 0, fmt.Errorf("invalid delta_poc_s0_minus1")
+		if len(rps.DeltaPocS0) == 0 {
+			return 0, fmt.Errorf("invalid DeltaPocS0")
 		}
-		v = rps.DeltaPocS0Minus1[0] + sps.MaxNumReorderPics[0]
+		return int(-rps.DeltaPocS0[0] - 1), nil
 	}
-
-	return v, nil
 }
 
-// DTSExtractor allows to extract DTS from PTS.
+// DTSExtractor computes DTS from PTS.
 type DTSExtractor struct {
-	spsp          *SPS
-	ppsp          *PPS
-	prevDTSFilled bool
-	prevDTS       time.Duration
+	sps             []byte
+	spsp            *SPS
+	pps             []byte
+	ppsp            *PPS
+	prevDTSFilled   bool
+	prevDTS         int64
+	randomReceived  bool
+	reorderedFrames int
+	pause           int
+}
+
+// Initialize initializes a DTSExtractor.
+func (d *DTSExtractor) Initialize() {
 }
 
 // NewDTSExtractor allocates a DTSExtractor.
+//
+// Deprecated: replaced by DTSExtractor.Initialize.
 func NewDTSExtractor() *DTSExtractor {
 	return &DTSExtractor{}
 }
 
-func (d *DTSExtractor) extractInner(au [][]byte, pts time.Duration) (time.Duration, error) {
+func (d *DTSExtractor) extractInner(au [][]byte, pts int64) (int64, error) {
 	var idr []byte
+	var cra []byte
 	var nonIDR []byte
 
+outer:
 	for _, nalu := range au {
 		typ := NALUType((nalu[0] >> 1) & 0b111111)
+
 		switch typ {
 		case NALUType_SPS_NUT:
-			var spsp SPS
-			err := spsp.Unmarshal(nalu)
-			if err != nil {
-				return 0, fmt.Errorf("invalid SPS: %w", err)
+			if !bytes.Equal(d.sps, nalu) {
+				var spsp SPS
+				err := spsp.Unmarshal(nalu)
+				if err != nil {
+					return 0, fmt.Errorf("invalid SPS: %w", err)
+				}
+
+				d.spsp = &spsp
+				d.sps = nalu
+
+				// reset state
+				d.randomReceived = false
+				if len(d.spsp.MaxNumReorderPics) == 1 {
+					d.reorderedFrames = int(d.spsp.MaxNumReorderPics[0])
+				} else {
+					d.reorderedFrames = 0
+				}
+				d.pause = d.reorderedFrames
 			}
-			d.spsp = &spsp
 
 		case NALUType_PPS_NUT:
-			var ppsp PPS
-			err := ppsp.Unmarshal(nalu)
-			if err != nil {
-				return 0, fmt.Errorf("invalid PPS: %w", err)
+			if !bytes.Equal(d.pps, nalu) {
+				var ppsp PPS
+				err := ppsp.Unmarshal(nalu)
+				if err != nil {
+					return 0, fmt.Errorf("invalid PPS: %w", err)
+				}
+
+				d.ppsp = &ppsp
+				d.pps = nalu
 			}
-			d.ppsp = &ppsp
 
 		case NALUType_IDR_W_RADL, NALUType_IDR_N_LP:
 			idr = nalu
+			break outer
 
-		case NALUType_TRAIL_N, NALUType_TRAIL_R, NALUType_CRA_NUT, NALUType_RASL_N, NALUType_RASL_R:
+		case NALUType_CRA_NUT:
+			cra = nalu
+			break outer
+
+		case NALUType_TRAIL_N, NALUType_TRAIL_R, NALUType_RASL_N, NALUType_RASL_R:
 			nonIDR = nalu
+			break outer
 		}
 	}
 
@@ -184,23 +216,29 @@ func (d *DTSExtractor) extractInner(au [][]byte, pts time.Duration) (time.Durati
 		return 0, fmt.Errorf("PPS not received yet")
 	}
 
-	if len(d.spsp.MaxNumReorderPics) != 1 || d.spsp.MaxNumReorderPics[0] == 0 {
-		return pts, nil
+	if !d.randomReceived {
+		if idr == nil && cra == nil {
+			return 0, fmt.Errorf("random access frame not received yet")
+		}
+		d.randomReceived = true
 	}
 
-	if d.spsp.VUI == nil || d.spsp.VUI.TimingInfo == nil {
-		return pts, nil
-	}
-
-	var samplesDiff uint32
+	var ptsDTSDiff int
 
 	switch {
 	case idr != nil:
-		samplesDiff = d.spsp.MaxNumReorderPics[0]
+		ptsDTSDiff = 0
+
+	case cra != nil:
+		var err error
+		ptsDTSDiff, err = getPTSDTSDiff(cra, d.spsp, d.ppsp)
+		if err != nil {
+			return 0, err
+		}
 
 	case nonIDR != nil:
 		var err error
-		samplesDiff, err = getPTSDTSDiff(nonIDR, d.spsp, d.ppsp)
+		ptsDTSDiff, err = getPTSDTSDiff(nonIDR, d.spsp, d.ppsp)
 		if err != nil {
 			return 0, err
 		}
@@ -209,15 +247,43 @@ func (d *DTSExtractor) extractInner(au [][]byte, pts time.Duration) (time.Durati
 		return 0, fmt.Errorf("access unit doesn't contain an IDR or non-IDR NALU")
 	}
 
-	timeDiff := time.Duration(samplesDiff) * time.Second *
-		time.Duration(d.spsp.VUI.TimingInfo.NumUnitsInTick) / time.Duration(d.spsp.VUI.TimingInfo.TimeScale)
-	dts := pts - timeDiff
+	ptsDTSDiff += d.reorderedFrames
 
-	return dts, nil
+	if ptsDTSDiff < 0 {
+		return 0, fmt.Errorf("negative pts-dts difference")
+	}
+
+	if d.pause > 0 {
+		d.pause--
+		if !d.prevDTSFilled {
+			var timeDiff int64
+			if d.spsp.VUI != nil && d.spsp.VUI.TimingInfo != nil && d.spsp.VUI.TimingInfo.TimeScale != 0 {
+				timeDiff = int64(ptsDTSDiff) * 90000 *
+					int64(d.spsp.VUI.TimingInfo.NumUnitsInTick) / int64(d.spsp.VUI.TimingInfo.TimeScale)
+			} else {
+				timeDiff = 9000
+			}
+			return pts - timeDiff, nil
+		}
+		return d.prevDTS + 90, nil
+	}
+
+	if !d.prevDTSFilled {
+		var timeDiff int64
+		if d.spsp.VUI != nil && d.spsp.VUI.TimingInfo != nil && d.spsp.VUI.TimingInfo.TimeScale != 0 {
+			timeDiff = int64(ptsDTSDiff) * 90000 *
+				int64(d.spsp.VUI.TimingInfo.NumUnitsInTick) / int64(d.spsp.VUI.TimingInfo.TimeScale)
+		} else {
+			timeDiff = 9000
+		}
+		return pts - timeDiff, nil
+	}
+
+	return d.prevDTS + (pts-d.prevDTS)/(int64(ptsDTSDiff)+1), nil
 }
 
 // Extract extracts the DTS of a access unit.
-func (d *DTSExtractor) Extract(au [][]byte, pts time.Duration) (time.Duration, error) {
+func (d *DTSExtractor) Extract(au [][]byte, pts int64) (int64, error) {
 	dts, err := d.extractInner(au, pts)
 	if err != nil {
 		return 0, err
@@ -227,7 +293,7 @@ func (d *DTSExtractor) Extract(au [][]byte, pts time.Duration) (time.Duration, e
 		return 0, fmt.Errorf("DTS is greater than PTS")
 	}
 
-	if d.prevDTSFilled && dts <= d.prevDTS {
+	if d.prevDTSFilled && dts < d.prevDTS {
 		return 0, fmt.Errorf("DTS is not monotonically increasing, was %v, now is %v",
 			d.prevDTS, dts)
 	}

@@ -8,15 +8,20 @@ import (
 
 	"github.com/asticode/go-astits"
 
-	"github.com/bluenviron/mediacommon/pkg/codecs/h264"
-	"github.com/bluenviron/mediacommon/pkg/codecs/mpeg1audio"
-	"github.com/bluenviron/mediacommon/pkg/codecs/mpeg4audio"
-	"github.com/bluenviron/mediacommon/pkg/codecs/mpeg4video"
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h265"
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg1audio"
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4video"
+	"github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts/codecs"
+	"github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts/substructs"
 )
 
 const (
-	streamIDVideo = 224
-	streamIDAudio = 192
+	streamIDVideo    = 224
+	streamIDAudio    = 192
+	streamIDMetadata = 0xFC
+	streamIDPrivate  = 0xBD
 
 	// PCR is needed to read H265 tracks with VLC+VDPAU hardware encoder
 	// (and is probably needed by other combinations too)
@@ -26,13 +31,13 @@ const (
 func opusMarshalSize(packets [][]byte) int {
 	n := 0
 	for _, packet := range packets {
-		au := opusAccessUnit{
-			ControlHeader: opusControlHeader{
+		au := substructs.OpusAccessUnit{
+			ControlHeader: substructs.OpusControlHeader{
 				PayloadSize: len(packet),
 			},
 			Packet: packet,
 		}
-		n += au.marshalSize()
+		n += au.MarshalSize()
 	}
 	return n
 }
@@ -47,26 +52,24 @@ func mpeg1AudioMarshalSize(frames [][]byte) int {
 
 // Writer is a MPEG-TS writer.
 type Writer struct {
+	W      io.Writer
+	Tracks []*Track
+
 	nextPID            uint16
 	mux                *astits.Muxer
 	pcrCounter         int
 	leadingTrackChosen bool
 }
 
-// NewWriter allocates a Writer.
-func NewWriter(
-	bw io.Writer,
-	tracks []*Track,
-) *Writer {
-	w := &Writer{
-		nextPID: 256,
-	}
+// Initialize initializes a Writer.
+func (w *Writer) Initialize() error {
+	w.nextPID = 256
 
 	w.mux = astits.NewMuxer(
 		context.Background(),
-		bw)
+		w.W)
 
-	for _, track := range tracks {
+	for _, track := range w.Tracks {
 		if track.PID == 0 {
 			track.PID = w.nextPID
 			w.nextPID++
@@ -75,31 +78,95 @@ func NewWriter(
 
 		err := w.mux.AddElementaryStream(*es)
 		if err != nil {
-			panic(err) // TODO: return error instead of panicking
+			return err
 		}
 	}
 
-	// WriteTables() is not necessary
+	// WriteTables() is not necessary for normal operation
 	// since it's called automatically when WriteData() is called with
 	// * PID == PCRPID
 	// * AdaptationField != nil
 	// * RandomAccessIndicator = true
+	// However, it can be called explicitly via Writer.WriteTables() when PAT/PMT
+	// need to be written before any media data (e.g., for late-joining clients).
 
+	return nil
+}
+
+// WriteTables explicitly writes PAT and PMT tables to the output.
+// This is useful for cases where PAT/PMT need to be captured before any
+// media data is written (e.g., to send to late-joining MPEG-TS clients).
+func (w *Writer) WriteTables() (int, error) {
+	// Ensure PCR PID is set before writing tables (required by astits)
+	// If no leading track has been chosen yet, use the first track's PID
+	if !w.leadingTrackChosen && len(w.Tracks) > 0 {
+		w.mux.SetPCRPID(w.Tracks[0].PID)
+	}
+	return w.mux.WriteTables()
+}
+
+// NewWriter allocates a Writer.
+//
+// Deprecated: replaced by Writer.Initialize().
+func NewWriter(
+	bw io.Writer,
+	tracks []*Track,
+) *Writer {
+	w := &Writer{
+		W:      bw,
+		Tracks: tracks,
+	}
+	err := w.Initialize()
+	if err != nil {
+		panic(err)
+	}
 	return w
 }
 
-// WriteH26x writes a H26x access unit.
-func (w *Writer) WriteH26x(
+// WriteH265 writes a H265 access unit.
+func (w *Writer) WriteH265(
 	track *Track,
 	pts int64,
 	dts int64,
-	randomAccess bool,
 	au [][]byte,
 ) error {
-	enc, err := h264.AnnexBMarshal(au)
+	// prepend an AUD. This is required by video.js, iOS, QuickTime
+	if au[0][0] != byte(h265.NALUType_AUD_NUT<<1) {
+		au = append([][]byte{
+			{byte(h265.NALUType_AUD_NUT) << 1, 1, 0x50},
+		}, au...)
+	}
+
+	enc, err := h264.AnnexB(au).Marshal()
 	if err != nil {
 		return err
 	}
+
+	randomAccess := h265.IsRandomAccess(au)
+
+	return w.WriteVideo(track, pts, dts, randomAccess, enc)
+}
+
+// WriteH264 writes a H264 access unit.
+func (w *Writer) WriteH264(
+	track *Track,
+	pts int64,
+	dts int64,
+	au [][]byte,
+) error {
+	// prepend an AUD. This is required by video.js, iOS, QuickTime
+	if au[0][0] != byte(h264.NALUTypeAccessUnitDelimiter) {
+		au = append([][]byte{
+			{byte(h264.NALUTypeAccessUnitDelimiter), 240},
+		}, au...)
+	}
+
+	enc, err := h264.AnnexB(au).Marshal()
+	if err != nil {
+		return err
+	}
+
+	randomAccess := h264.IsRandomAccess(au)
 
 	return w.WriteVideo(track, pts, dts, randomAccess, enc)
 }
@@ -135,13 +202,13 @@ func (w *Writer) WriteOpus(
 	enc := make([]byte, opusMarshalSize(packets))
 	n := 0
 	for _, packet := range packets {
-		au := opusAccessUnit{
-			ControlHeader: opusControlHeader{
+		au := substructs.OpusAccessUnit{
+			ControlHeader: substructs.OpusControlHeader{
 				PayloadSize: len(packet),
 			},
 			Packet: packet,
 		}
-		mn, err := au.marshalTo(enc[n:])
+		mn, err := au.MarshalTo(enc[n:])
 		if err != nil {
 			return err
 		}
@@ -157,19 +224,37 @@ func (w *Writer) WriteMPEG4Audio(
 	pts int64,
 	aus [][]byte,
 ) error {
-	aacCodec := track.Codec.(*CodecMPEG4Audio)
+	codec := track.Codec.(*codecs.MPEG4Audio)
+
 	pkts := make(mpeg4audio.ADTSPackets, len(aus))
 
 	for i, au := range aus {
 		pkts[i] = &mpeg4audio.ADTSPacket{
-			Type:         aacCodec.Config.Type,
-			SampleRate:   aacCodec.SampleRate,
-			ChannelCount: aacCodec.Config.ChannelCount,
-			AU:           au,
+			Type:          codec.Type,
+			SampleRate:    codec.SampleRate,
+			ChannelConfig: codec.ChannelConfig,
+			ChannelCount:  codec.ChannelCount, //nolint:staticcheck
+			AU:            au,
 		}
 	}
 
 	enc, err := pkts.Marshal()
+	if err != nil {
+		return err
+	}
+
+	return w.WriteAudio(track, pts, enc)
+}
+
+// WriteMPEG4AudioLATM writes MPEG-4 Audio LATM audioMuxElements.
+func (w *Writer) WriteMPEG4AudioLATM(
+	track *Track,
+	pts int64,
+	els [][]byte,
+) error {
+	enc, err := mpeg4audio.AudioSyncStream{
+		AudioMuxElements: els,
+	}.Marshal()
 	if err != nil {
 		return err
 	}
@@ -213,6 +298,44 @@ func (w *Writer) WriteAC3(
 	frame []byte,
 ) error {
 	return w.WriteAudio(track, pts, frame)
+}
+
+// WriteEAC3 writes an E-AC-3 (Dolby Digital Plus) frame.
+func (w *Writer) WriteEAC3(
+	track *Track,
+	pts int64,
+	frame []byte,
+) error {
+	return w.WriteAudio(track, pts, frame)
+}
+
+// WriteKLV writes a KLV unit.
+func (w *Writer) WriteKLV(
+	track *Track,
+	pts int64,
+	unit []byte,
+) error {
+	codec := track.Codec.(*codecs.KLV)
+
+	if codec.Synchronous {
+		out, err := writeMetadataAUWrapper(unit)
+		if err != nil {
+			return err
+		}
+
+		return w.writeData(track, true, pts, streamIDMetadata, out)
+	}
+
+	return w.writeData(track, false, 0, streamIDPrivate, unit)
+}
+
+// WriteDVBSubtitle writes DVB subtitle data.
+func (w *Writer) WriteDVBSubtitle(
+	track *Track,
+	pts int64,
+	data []byte,
+) error {
+	return w.writeData(track, true, pts, streamIDPrivate, data)
 }
 
 func (w *Writer) WriteVideo(
@@ -307,6 +430,51 @@ func (w *Writer) WriteAudio(track *Track, pts int64, data []byte) error {
 				StreamID: streamIDAudio,
 			},
 			Data: data,
+		},
+	})
+	return err
+}
+
+func (w *Writer) writeData(track *Track, hasPTS bool, pts int64, streamID uint8, data []byte) error {
+	if !w.leadingTrackChosen {
+		w.leadingTrackChosen = true
+		track.isLeading = true
+		w.mux.SetPCRPID(track.PID)
+	}
+
+	af := &astits.PacketAdaptationField{
+		RandomAccessIndicator: true,
+	}
+
+	if track.isLeading {
+		if w.pcrCounter == 0 {
+			af.HasPCR = true
+			af.PCR = &astits.ClockReference{Base: pts - dtsPCRDiff}
+			w.pcrCounter = 3
+		}
+		w.pcrCounter--
+	}
+
+	oh := &astits.PESOptionalHeader{
+		MarkerBits: 2,
+	}
+
+	if hasPTS {
+		oh.PTSDTSIndicator = astits.PTSDTSIndicatorOnlyPTS
+		oh.PTS = &astits.ClockReference{Base: pts}
+	}
+
+	header := &astits.PESHeader{
+		StreamID:       streamID,
+		OptionalHeader: oh,
+	}
+
+	_, err := w.mux.WriteData(&astits.MuxerData{
+		PID:             track.PID,
+		AdaptationField: af,
+		PES: &astits.PESData{
+			Header: header,
+			Data:   data,
 		},
 	})
 	return err

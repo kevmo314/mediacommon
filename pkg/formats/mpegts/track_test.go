@@ -3,13 +3,13 @@ package mpegts
 
 import (
 	"bytes"
-	"context"
 	"testing"
 
-	"github.com/asticode/go-astits"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bluenviron/mediacommon/pkg/codecs/mpeg4audio"
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
+	"github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts/codecs"
+	"github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts/substructs"
 )
 
 func TestTrackUnmarshalExternal(t *testing.T) {
@@ -72,7 +72,7 @@ func TestTrackUnmarshalExternal(t *testing.T) {
 			},
 			&Track{
 				PID:   65,
-				Codec: &CodecH264{},
+				Codec: &codecs.H264{},
 			},
 		},
 		{
@@ -129,7 +129,7 @@ func TestTrackUnmarshalExternal(t *testing.T) {
 			},
 			&Track{
 				PID:   256,
-				Codec: &CodecH264{},
+				Codec: &codecs.H264{},
 			},
 		},
 		{
@@ -186,7 +186,7 @@ func TestTrackUnmarshalExternal(t *testing.T) {
 			},
 			&Track{
 				PID:   256,
-				Codec: &CodecH265{},
+				Codec: &codecs.H265{},
 			},
 		},
 		{
@@ -625,11 +625,12 @@ func TestTrackUnmarshalExternal(t *testing.T) {
 			},
 			&Track{
 				PID: 256,
-				Codec: &CodecMPEG4Audio{
+				Codec: &codecs.MPEG4Audio{
 					Config: mpeg4audio.AudioSpecificConfig{
-						Type:         2,
-						SampleRate:   48000,
-						ChannelCount: 2,
+						Type:          2,
+						SampleRate:    48000,
+						ChannelConfig: 2,
+						ChannelCount:  2,
 					},
 				},
 			},
@@ -688,17 +689,18 @@ func TestTrackUnmarshalExternal(t *testing.T) {
 			},
 			&Track{
 				PID: 256,
-				Codec: &CodecOpus{
+				Codec: &codecs.Opus{
+					Desc: &substructs.OpusAudioDescriptor{
+						ChannelConfigCode: 2,
+					},
 					ChannelCount: 2,
 				},
 			},
 		},
 	} {
 		t.Run(ca.name, func(t *testing.T) {
-			dem := astits.NewDemuxer(
-				context.Background(),
-				bytes.NewReader(ca.byts),
-				astits.DemuxerOptPacketSize(188))
+			dem := &robustDemuxer{R: bytes.NewReader(ca.byts)}
+			dem.initialize()
 
 			pmt, err := findPMT(dem)
 			require.NoError(t, err)

@@ -3,7 +3,7 @@ package vp9
 import (
 	"fmt"
 
-	"github.com/bluenviron/mediacommon/pkg/bits"
+	"github.com/bluenviron/mediacommon/v2/pkg/bits"
 )
 
 // Header_ColorConfig is the color_config member of an header.
@@ -40,14 +40,13 @@ func (c *Header_ColorConfig) unmarshal(profile uint8, buf []byte, pos *int) erro
 	c.ColorSpace = uint8(tmp)
 
 	if c.ColorSpace != 7 {
-		var err error
 		c.ColorRange, err = bits.ReadFlag(buf, pos)
 		if err != nil {
 			return err
 		}
 
 		if profile == 1 || profile == 3 {
-			err := bits.HasSpace(buf, *pos, 3)
+			err = bits.HasSpace(buf, *pos, 3)
 			if err != nil {
 				return err
 			}
@@ -66,7 +65,7 @@ func (c *Header_ColorConfig) unmarshal(profile uint8, buf []byte, pos *int) erro
 			c.SubsamplingX = false
 			c.SubsamplingY = false
 
-			err := bits.HasSpace(buf, *pos, 1)
+			err = bits.HasSpace(buf, *pos, 1)
 			if err != nil {
 				return err
 			}
@@ -95,8 +94,7 @@ func (s *Header_FrameSize) unmarshal(buf []byte, pos *int) error {
 }
 
 // Header is a VP9 Frame header.
-// Specification:
-// https://storage.googleapis.com/downloads.webmproject.org/docs/vp9/vp9-bitstream-specification-v0.6-20160331-draft.pdf
+// Specification: VP9 Bitstream & Decoding Process Specification v0.6, section 6.2
 type Header struct {
 	Profile            uint8
 	ShowExistingFrame  bool
@@ -159,7 +157,7 @@ func (h *Header) Unmarshal(buf []byte) error {
 	h.ErrorResilientMode = bits.ReadFlagUnsafe(buf, &pos)
 
 	if !h.NonKeyFrame {
-		err := bits.HasSpace(buf, pos, 24)
+		err = bits.HasSpace(buf, pos, 24)
 		if err != nil {
 			return err
 		}

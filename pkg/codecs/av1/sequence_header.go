@@ -3,7 +3,7 @@ package av1
 import (
 	"fmt"
 
-	"github.com/bluenviron/mediacommon/pkg/bits"
+	"github.com/bluenviron/mediacommon/v2/pkg/bits"
 )
 
 // SequenceHeader_ColorPrimaries is a ColorPrimaries value.
@@ -144,13 +144,15 @@ func (c *SequenceHeader_ColorConfig) unmarshal(seqProfile uint8, buf []byte, pos
 			return err
 		}
 
-		switch {
-		case seqProfile == 0:
+		switch seqProfile {
+		case 0:
 			c.SubsamplingX = true
 			c.SubsamplingY = true
-		case seqProfile == 1:
+
+		case 1:
 			c.SubsamplingX = false
 			c.SubsamplingY = false
+
 		default:
 			if c.BitDepth == 12 {
 				c.SubsamplingX, err = bits.ReadFlag(buf, pos)
@@ -173,7 +175,8 @@ func (c *SequenceHeader_ColorConfig) unmarshal(seqProfile uint8, buf []byte, pos
 		}
 
 		if c.SubsamplingX && c.SubsamplingY {
-			tmp, err := bits.ReadBits(buf, pos, 2)
+			var tmp uint64
+			tmp, err = bits.ReadBits(buf, pos, 2)
 			if err != nil {
 				return err
 			}
@@ -184,13 +187,43 @@ func (c *SequenceHeader_ColorConfig) unmarshal(seqProfile uint8, buf []byte, pos
 	return nil
 }
 
+// SequenceHeader_TimingInfo is the timing_info() struct in the AV1 specification.
+type SequenceHeader_TimingInfo struct { //nolint:revive
+	NumUnitsInDisplayTick    uint32
+	TimeScale                uint32
+	EqualPictureInterval     bool
+	NumTicksPerPictureMinus1 uint32
+}
+
+func (t *SequenceHeader_TimingInfo) unmarshal(buf []byte, pos *int) error {
+	err := bits.HasSpace(buf, *pos, 65)
+	if err != nil {
+		return err
+	}
+
+	t.NumUnitsInDisplayTick = uint32(bits.ReadBitsUnsafe(buf, pos, 32))
+	t.TimeScale = uint32(bits.ReadBitsUnsafe(buf, pos, 32))
+	t.EqualPictureInterval = bits.ReadFlagUnsafe(buf, pos)
+
+	if t.EqualPictureInterval {
+		t.NumTicksPerPictureMinus1, err = bits.ReadGolombUnsigned(buf, pos)
+		if err != nil {
+			return err
+		}
+	} else {
+		t.NumTicksPerPictureMinus1 = 0
+	}
+
+	return nil
+}
+
 // SequenceHeader is a AV1 Sequence header OBU.
-// Specification: https://aomediacodec.github.io/av1-spec/#sequence-header-obu-syntax
+// Specification: AV1 Bitstream & Decoding Process, section 5.5
 type SequenceHeader struct {
 	SeqProfile                     uint8
 	StillPicture                   bool
 	ReducedStillPictureHeader      bool
-	TimingInfoPresentFlag          bool
+	TimingInfo                     *SequenceHeader_TimingInfo
 	DecoderModelInfoPresentFlag    bool
 	InitialDisplayDelayPresentFlag bool
 	OperatingPointsCntMinus1       uint8
@@ -203,6 +236,8 @@ type SequenceHeader struct {
 	MaxFrameWidthMinus1            uint32
 	MaxFrameHeightMinus1           uint32
 	FrameIDNumbersPresentFlag      bool
+	DeltaFrameIDLengthMinus2       uint8
+	AdditionalFrameIDLengthMinus1  uint8
 	Use128x128Superblock           bool
 	EnableFilterIntra              bool
 	EnableIntraEdgeFilter          bool
@@ -222,6 +257,7 @@ type SequenceHeader struct {
 	EnableCdef                     bool
 	EnableRestoration              bool
 	ColorConfig                    SequenceHeader_ColorConfig
+	FilmGrainParamsPresent         bool
 }
 
 // Unmarshal decodes a SequenceHeader.
@@ -234,14 +270,14 @@ func (h *SequenceHeader) Unmarshal(buf []byte) error {
 	buf = buf[1:]
 
 	if oh.HasSize {
-		var size uint
-		var sizeN int
-		size, sizeN, err = LEB128Unmarshal(buf)
+		var size LEB128
+		var n int
+		n, err = size.Unmarshal(buf)
 		if err != nil {
 			return err
 		}
 
-		buf = buf[sizeN:]
+		buf = buf[n:]
 		if len(buf) != int(size) {
 			return fmt.Errorf("wrong buffer size: expected %d, got %d", size, len(buf))
 		}
@@ -259,7 +295,7 @@ func (h *SequenceHeader) Unmarshal(buf []byte) error {
 	h.ReducedStillPictureHeader = bits.ReadFlagUnsafe(buf, &pos)
 
 	if h.ReducedStillPictureHeader {
-		h.TimingInfoPresentFlag = false
+		h.TimingInfo = nil
 		h.DecoderModelInfoPresentFlag = false
 		h.InitialDisplayDelayPresentFlag = false
 		h.OperatingPointsCntMinus1 = 0
@@ -275,15 +311,30 @@ func (h *SequenceHeader) Unmarshal(buf []byte) error {
 		h.DecoderModelPresentForThisOp = []bool{false}
 		h.InitialDisplayPresentForThisOp = []bool{false}
 	} else {
-		h.TimingInfoPresentFlag, err = bits.ReadFlag(buf, &pos)
+		var timingInfoPresentFlag bool
+		timingInfoPresentFlag, err = bits.ReadFlag(buf, &pos)
 		if err != nil {
 			return err
 		}
 
-		if h.TimingInfoPresentFlag {
-			return fmt.Errorf("timing_info_present_flag is not supported yet")
+		if timingInfoPresentFlag {
+			h.TimingInfo = &SequenceHeader_TimingInfo{}
+			err = h.TimingInfo.unmarshal(buf, &pos)
+			if err != nil {
+				return err
+			}
+
+			h.DecoderModelInfoPresentFlag, err = bits.ReadFlag(buf, &pos)
+			if err != nil {
+				return err
+			}
+			if h.DecoderModelInfoPresentFlag {
+				return fmt.Errorf("decoder_model_info_present_flag is not supported yet")
+			}
+		} else {
+			h.TimingInfo = nil
+			h.DecoderModelInfoPresentFlag = false
 		}
-		h.DecoderModelInfoPresentFlag = false
 
 		err = bits.HasSpace(buf, pos, 6)
 		if err != nil {
@@ -370,7 +421,13 @@ func (h *SequenceHeader) Unmarshal(buf []byte) error {
 		}
 
 		if h.FrameIDNumbersPresentFlag {
-			return fmt.Errorf("frame_id_numbers_present_flag is not supported yet")
+			err = bits.HasSpace(buf, pos, 7)
+			if err != nil {
+				return err
+			}
+
+			h.DeltaFrameIDLengthMinus2 = uint8(bits.ReadBitsUnsafe(buf, &pos, 4))
+			h.AdditionalFrameIDLengthMinus1 = uint8(bits.ReadBitsUnsafe(buf, &pos, 3))
 		}
 	}
 
@@ -470,7 +527,19 @@ func (h *SequenceHeader) Unmarshal(buf []byte) error {
 	h.EnableCdef = bits.ReadFlagUnsafe(buf, &pos)
 	h.EnableRestoration = bits.ReadFlagUnsafe(buf, &pos)
 
-	return h.ColorConfig.unmarshal(h.SeqProfile, buf, &pos)
+	err = h.ColorConfig.unmarshal(h.SeqProfile, buf, &pos)
+	if err != nil {
+		return err
+	}
+
+	err = bits.HasSpace(buf, pos, 1)
+	if err != nil {
+		return err
+	}
+
+	h.FilmGrainParamsPresent = bits.ReadFlagUnsafe(buf, &pos)
+
+	return nil
 }
 
 // Width returns the video width.

@@ -3,9 +3,8 @@ package h264
 import (
 	"bytes"
 	"fmt"
-	"time"
 
-	"github.com/bluenviron/mediacommon/pkg/bits"
+	"github.com/bluenviron/mediacommon/v2/pkg/bits"
 )
 
 const (
@@ -19,13 +18,9 @@ const (
 	maxBytesToGetPOC = 22
 )
 
-func getPictureOrderCount(buf []byte, sps *SPS) (uint32, error) {
+func getPictureOrderCount(buf []byte, sps *SPS, idr bool) (uint32, error) {
 	buf = buf[1:]
-	lb := len(buf)
-
-	if lb > maxBytesToGetPOC {
-		lb = maxBytesToGetPOC
-	}
+	lb := min(len(buf), maxBytesToGetPOC)
 
 	buf = EmulationPreventionRemove(buf[:lb])
 	pos := 0
@@ -50,6 +45,13 @@ func getPictureOrderCount(buf []byte, sps *SPS) (uint32, error) {
 		return 0, err
 	}
 
+	if idr {
+		_, err = bits.ReadGolombUnsigned(buf, &pos) // idr_pic_id
+		if err != nil {
+			return 0, err
+		}
+	}
+
 	picOrderCntLsb, err := bits.ReadBits(buf, &pos, int(sps.Log2MaxPicOrderCntLsbMinus4+4))
 	if err != nil {
 		return 0, err
@@ -58,40 +60,61 @@ func getPictureOrderCount(buf []byte, sps *SPS) (uint32, error) {
 	return uint32(picOrderCntLsb), nil
 }
 
-func getPictureOrderCountDiff(a uint32, b uint32, sps *SPS) int32 {
-	max := uint32(1 << (sps.Log2MaxPicOrderCntLsbMinus4 + 4))
-	d := (a - b) & (max - 1)
-	if d > (max / 2) {
-		return int32(d) - int32(max)
+func pictureOrderCountDiff(a uint32, b uint32, sps *SPS) int32 {
+	maxVal := uint32(1 << (sps.Log2MaxPicOrderCntLsbMinus4 + 4))
+	d := (a - b) & (maxVal - 1)
+	if d > (maxVal / 2) {
+		return int32(d) - int32(maxVal)
 	}
 	return int32(d)
 }
 
-// DTSExtractor allows to extract DTS from PTS.
+// DTSExtractor computes DTS from PTS.
 type DTSExtractor struct {
 	sps             []byte
 	spsp            *SPS
 	prevDTSFilled   bool
-	prevDTS         time.Duration
+	prevDTS         int64
+	randomReceived  bool
 	expectedPOC     uint32
 	reorderedFrames int
-	pauseDTS        int
+	pause           int
+	auCount         int
 	pocIncrement    int
+	prevPOC         uint32
+	prevPrevPOC     uint32
+}
+
+// Initialize initializes a DTSExtractor.
+func (d *DTSExtractor) Initialize() {
+	d.pocIncrement = 2
 }
 
 // NewDTSExtractor allocates a DTSExtractor.
+//
+// Deprecated: replaced by DTSExtractor.Initialize.
 func NewDTSExtractor() *DTSExtractor {
-	return &DTSExtractor{
-		pocIncrement: 2,
-	}
+	d := &DTSExtractor{}
+	d.Initialize()
+	return d
 }
 
-func (d *DTSExtractor) extractInner(au [][]byte, pts time.Duration) (time.Duration, bool, error) {
+func (d *DTSExtractor) extractInner(au [][]byte, pts int64) (int64, bool, error) {
 	var idr []byte
 	var nonIDR []byte
+	// a value of 00 indicates that the content of the NAL unit is not
+	// used to reconstruct reference pictures for inter picture
+	// prediction.  Such NAL units can be discarded without risking
+	// the integrity of the reference pictures.  Values greater than
+	// 00 indicate that the decoding of the NAL unit is required to
+	// maintain the integrity of the reference pictures.
+	nonZeroNalRefIDFound := false
 
+outer:
 	for _, nalu := range au {
 		typ := NALUType(nalu[0] & 0x1F)
+		nonZeroNalRefIDFound = nonZeroNalRefIDFound || ((nalu[0] & 0x60) > 0)
+
 		switch typ {
 		case NALUTypeSPS:
 			if !bytes.Equal(d.sps, nalu) {
@@ -104,15 +127,23 @@ func (d *DTSExtractor) extractInner(au [][]byte, pts time.Duration) (time.Durati
 				d.spsp = &spsp
 
 				// reset state
+				d.randomReceived = false
+				d.expectedPOC = 0
 				d.reorderedFrames = 0
+				d.pause = 0
+				d.auCount = 0
 				d.pocIncrement = 2
+				d.prevPOC = 0
+				d.prevPrevPOC = 0
 			}
 
 		case NALUTypeIDR:
 			idr = nalu
+			break outer
 
 		case NALUTypeNonIDR:
 			nonIDR = nalu
+			break outer
 		}
 	}
 
@@ -128,75 +159,121 @@ func (d *DTSExtractor) extractInner(au [][]byte, pts time.Duration) (time.Durati
 		return 0, false, fmt.Errorf("pic_order_cnt_type = 1 is not supported yet")
 	}
 
+	if !d.randomReceived {
+		if idr == nil {
+			return 0, false, fmt.Errorf("random access frame not received yet")
+		}
+		d.randomReceived = true
+	}
+
+	var ptsDTSDiff int
+
 	switch {
 	case idr != nil:
-		d.expectedPOC = 0
-		d.pauseDTS = 0
-
-		if !d.prevDTSFilled || d.reorderedFrames == 0 {
-			return pts, false, nil
-		}
-
-		return d.prevDTS + (pts-d.prevDTS)/time.Duration(d.reorderedFrames+1), false, nil
-
-	case nonIDR != nil:
-		d.expectedPOC += uint32(d.pocIncrement)
-		d.expectedPOC &= ((1 << (d.spsp.Log2MaxPicOrderCntLsbMinus4 + 4)) - 1)
-
-		if d.pauseDTS > 0 {
-			d.pauseDTS--
-			return d.prevDTS + 1*time.Millisecond, true, nil
-		}
-
-		poc, err := getPictureOrderCount(nonIDR, d.spsp)
+		var err error
+		d.expectedPOC, err = getPictureOrderCount(idr, d.spsp, true)
 		if err != nil {
 			return 0, false, err
 		}
 
-		if d.pocIncrement == 2 && (poc%2) != 0 {
-			d.pocIncrement = 1
-			d.expectedPOC /= 2
-		}
-
-		pocDiff := int(getPictureOrderCountDiff(poc, d.expectedPOC, d.spsp)) / d.pocIncrement
-		limit := -(d.reorderedFrames + 1)
-
-		// this happens when there are B-frames immediately following an IDR frame
-		if pocDiff < limit {
-			increase := limit - pocDiff
-			if (d.reorderedFrames + increase) > maxReorderedFrames {
-				return 0, false, fmt.Errorf("too many reordered frames (%d)", d.reorderedFrames+increase)
+		if d.pocIncrement == 2 {
+			if (d.expectedPOC % 2) != 0 {
+				d.pocIncrement = 1
 			}
 
-			d.reorderedFrames += increase
-			d.pauseDTS = increase
-			return d.prevDTS + 1*time.Millisecond, true, nil
+			d.auCount = 1
+			d.prevPrevPOC = 0
+			d.prevPOC = d.expectedPOC
 		}
 
-		if pocDiff == limit {
-			return pts, false, nil
+		ptsDTSDiff = 0
+
+	case nonIDR != nil:
+		poc, err := getPictureOrderCount(nonIDR, d.spsp, false)
+		if err != nil {
+			return 0, false, err
 		}
 
-		if pocDiff > d.reorderedFrames {
-			increase := pocDiff - d.reorderedFrames
-			if (d.reorderedFrames + increase) > maxReorderedFrames {
-				return 0, false, fmt.Errorf("too many reordered frames (%d)", d.reorderedFrames+increase)
+		if d.auCount < 5 && d.pocIncrement == 2 {
+			if (poc % 2) != 0 {
+				d.pocIncrement = 1
+				d.expectedPOC /= 2
+
+				if d.reorderedFrames != 0 {
+					increase := d.reorderedFrames
+					if (d.reorderedFrames + increase) > maxReorderedFrames {
+						return 0, false, fmt.Errorf("too many reordered frames (%d)", d.reorderedFrames+increase)
+					}
+
+					d.reorderedFrames += increase
+					d.pause += increase
+				}
+			} else if d.auCount >= 2 && (poc%4) == 0 && poc == (d.prevPOC+4) && d.prevPOC == (d.prevPrevPOC+4) {
+				d.pocIncrement = 4
+				d.expectedPOC *= 2
 			}
 
-			d.reorderedFrames += increase
-			d.pauseDTS = increase - 1
-			return d.prevDTS + 1*time.Millisecond, false, nil
+			d.auCount++
+			d.prevPrevPOC = d.prevPOC
+			d.prevPOC = poc
 		}
 
-		return d.prevDTS + (pts-d.prevDTS)/time.Duration(pocDiff+d.reorderedFrames+1), false, nil
+		d.expectedPOC += uint32(d.pocIncrement)
+		d.expectedPOC &= ((1 << (d.spsp.Log2MaxPicOrderCntLsbMinus4 + 4)) - 1)
+
+		ptsDTSDiff = int(pictureOrderCountDiff(poc, d.expectedPOC, d.spsp)) / d.pocIncrement
+
+	case !nonZeroNalRefIDFound:
+		if !d.prevDTSFilled {
+			return pts, true, nil
+		}
+		return d.prevDTS, false, nil
 
 	default:
 		return 0, false, fmt.Errorf("access unit doesn't contain an IDR or non-IDR NALU")
 	}
+
+	ptsDTSDiff += d.reorderedFrames
+
+	switch {
+	case ptsDTSDiff > (2*d.reorderedFrames + 1):
+		increase := ptsDTSDiff - (2*d.reorderedFrames + 1)
+		if (d.reorderedFrames + increase) > maxReorderedFrames {
+			return 0, false, fmt.Errorf("too many reordered frames (%d)", d.reorderedFrames+increase)
+		}
+
+		d.reorderedFrames += increase
+		d.pause += increase
+		ptsDTSDiff += increase
+
+	case ptsDTSDiff < 0:
+		increase := -ptsDTSDiff
+		if (d.reorderedFrames + increase) > maxReorderedFrames {
+			return 0, false, fmt.Errorf("too many reordered frames (%d)", d.reorderedFrames+increase)
+		}
+
+		d.reorderedFrames += increase
+		d.pause += increase
+		ptsDTSDiff += increase
+	}
+
+	if d.pause > 0 {
+		d.pause--
+		if !d.prevDTSFilled {
+			return pts, true, nil
+		}
+		return d.prevDTS + 90, true, nil
+	}
+
+	if !d.prevDTSFilled {
+		return pts, true, nil
+	}
+
+	return d.prevDTS + (pts-d.prevDTS)/(int64(ptsDTSDiff)+1), false, nil
 }
 
 // Extract extracts the DTS of an access unit.
-func (d *DTSExtractor) Extract(au [][]byte, pts time.Duration) (time.Duration, error) {
+func (d *DTSExtractor) Extract(au [][]byte, pts int64) (int64, error) {
 	dts, skipChecks, err := d.extractInner(au, pts)
 	if err != nil {
 		return 0, err
@@ -206,13 +283,13 @@ func (d *DTSExtractor) Extract(au [][]byte, pts time.Duration) (time.Duration, e
 		return 0, fmt.Errorf("DTS is greater than PTS")
 	}
 
-	if d.prevDTSFilled && dts <= d.prevDTS {
+	if d.prevDTSFilled && dts < d.prevDTS {
 		return 0, fmt.Errorf("DTS is not monotonically increasing, was %v, now is %v",
 			d.prevDTS, dts)
 	}
 
-	d.prevDTS = dts
 	d.prevDTSFilled = true
+	d.prevDTS = dts
 
 	return dts, err
 }

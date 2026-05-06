@@ -3,7 +3,7 @@ package h264
 import (
 	"fmt"
 
-	"github.com/bluenviron/mediacommon/pkg/bits"
+	"github.com/bluenviron/mediacommon/v2/pkg/bits"
 )
 
 const (
@@ -16,7 +16,7 @@ func readScalingList(buf []byte, pos *int, size int) ([]int32, bool, error) {
 	scalingList := make([]int32, size)
 	var useDefaultScalingMatrixFlag bool
 
-	for j := 0; j < size; j++ {
+	for j := range size {
 		if nextScale != 0 {
 			deltaScale, err := bits.ReadGolombSigned(buf, pos)
 			if err != nil {
@@ -65,29 +65,32 @@ func (h *SPS_HRD) unmarshal(buf []byte, pos *int) error {
 		return err
 	}
 
+	if h.CpbCntMinus1 > 31 {
+		return fmt.Errorf("invalid cpb_cnt_minus1")
+	}
+
 	h.BitRateScale = uint8(bits.ReadBitsUnsafe(buf, pos, 4))
 	h.CpbSizeScale = uint8(bits.ReadBitsUnsafe(buf, pos, 4))
 
+	h.BitRateValueMinus1 = make([]uint32, h.CpbCntMinus1+1)
+	h.CpbSizeValueMinus1 = make([]uint32, h.CpbCntMinus1+1)
+	h.CbrFlag = make([]bool, h.CpbCntMinus1+1)
+
 	for i := uint32(0); i <= h.CpbCntMinus1; i++ {
-		var v uint32
-		v, err = bits.ReadGolombUnsigned(buf, pos)
+		h.BitRateValueMinus1[i], err = bits.ReadGolombUnsigned(buf, pos)
 		if err != nil {
 			return err
 		}
-		h.BitRateValueMinus1 = append(h.BitRateValueMinus1, v)
 
-		v, err = bits.ReadGolombUnsigned(buf, pos)
+		h.CpbSizeValueMinus1[i], err = bits.ReadGolombUnsigned(buf, pos)
 		if err != nil {
 			return err
 		}
-		h.CpbSizeValueMinus1 = append(h.CpbSizeValueMinus1, v)
 
-		var vb bool
-		vb, err = bits.ReadFlag(buf, pos)
+		h.CbrFlag[i], err = bits.ReadFlag(buf, pos)
 		if err != nil {
 			return err
 		}
-		h.CbrFlag = append(h.CbrFlag, vb)
 	}
 
 	err = bits.HasSpace(buf, *pos, 5+5+5+5)
@@ -354,7 +357,7 @@ func (v *SPS_VUI) unmarshal(buf []byte, pos *int) error {
 
 	if bitstreamRestrictionFlag {
 		v.BitstreamRestriction = &SPS_BitstreamRestriction{}
-		err := v.BitstreamRestriction.unmarshal(buf, pos)
+		err = v.BitstreamRestriction.unmarshal(buf, pos)
 		if err != nil {
 			return err
 		}
@@ -703,7 +706,7 @@ func (s *SPS) Unmarshal(buf []byte) error {
 
 	if vuiParametersPresentFlag {
 		s.VUI = &SPS_VUI{}
-		err := s.VUI.unmarshal(buf, &pos)
+		err = s.VUI.unmarshal(buf, &pos)
 		if err != nil {
 			return err
 		}

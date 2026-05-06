@@ -3,7 +3,8 @@ package fmp4
 import (
 	"io"
 
-	"github.com/abema/go-mp4"
+	amp4 "github.com/abema/go-mp4"
+	imp4 "github.com/bluenviron/mediacommon/v2/internal/mp4"
 )
 
 const (
@@ -23,7 +24,7 @@ type Part struct {
 }
 
 // Marshal encodes a fMP4 part.
-func (p *Part) Marshal(w io.WriteSeeker) error {
+func (p Part) Marshal(w io.WriteSeeker) error {
 	/*
 		|moof|
 		|    |mfhd|
@@ -33,14 +34,15 @@ func (p *Part) Marshal(w io.WriteSeeker) error {
 		|mdat|
 	*/
 
-	mw := newMP4Writer(w)
+	mw := &imp4.Writer{W: w}
+	mw.Initialize()
 
-	moofOffset, err := mw.writeBoxStart(&mp4.Moof{}) // <moof>
+	moofOffset, err := mw.WriteBoxStart(&amp4.Moof{}) // <moof>
 	if err != nil {
 		return err
 	}
 
-	_, err = mw.writeBox(&mp4.Mfhd{ // <mfhd/>
+	_, err = mw.WriteBox(&amp4.Mfhd{ // <mfhd/>
 		SequenceNumber: p.SequenceNumber,
 	})
 	if err != nil {
@@ -48,13 +50,13 @@ func (p *Part) Marshal(w io.WriteSeeker) error {
 	}
 
 	trackLen := len(p.Tracks)
-	truns := make([]*mp4.Trun, trackLen)
+	truns := make([]*amp4.Trun, trackLen)
 	trunOffsets := make([]int, trackLen)
 	dataOffsets := make([]int, trackLen)
 	dataSize := 0
 
 	for i, track := range p.Tracks {
-		var trun *mp4.Trun
+		var trun *amp4.Trun
 		var trunOffset int
 		trun, trunOffset, err = track.marshal(mw)
 		if err != nil {
@@ -71,12 +73,12 @@ func (p *Part) Marshal(w io.WriteSeeker) error {
 		trunOffsets[i] = trunOffset
 	}
 
-	err = mw.writeBoxEnd() // </moof>
+	err = mw.WriteBoxEnd() // </moof>
 	if err != nil {
 		return err
 	}
 
-	mdat := &mp4.Mdat{} // <mdat/>
+	mdat := &amp4.Mdat{} // <mdat/>
 	mdat.Data = make([]byte, dataSize)
 	pos := 0
 
@@ -86,14 +88,14 @@ func (p *Part) Marshal(w io.WriteSeeker) error {
 		}
 	}
 
-	mdatOffset, err := mw.writeBox(mdat)
+	mdatOffset, err := mw.WriteBox(mdat)
 	if err != nil {
 		return err
 	}
 
 	for i := range p.Tracks {
 		truns[i].DataOffset = int32(dataOffsets[i] + mdatOffset - moofOffset + 8)
-		err = mw.rewriteBox(trunOffsets[i], truns[i])
+		err = mw.RewriteBox(trunOffsets[i], truns[i])
 		if err != nil {
 			return err
 		}

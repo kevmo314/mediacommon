@@ -1,4 +1,4 @@
-package jpeg
+package jpeg //nolint:revive
 
 import (
 	"bytes"
@@ -69,6 +69,10 @@ func TestDefineQuantizationTableMarshal(t *testing.T) {
 }
 
 func FuzzDefineQuantizationTableUnmarshal(f *testing.F) {
+	for _, ca := range casesDefineQuantizationTable {
+		f.Add(ca.enc)
+	}
+
 	f.Fuzz(func(_ *testing.T, b []byte) {
 		var h DefineQuantizationTable
 		h.Unmarshal(b) //nolint:errcheck

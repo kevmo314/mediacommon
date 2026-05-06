@@ -5,7 +5,11 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/abema/go-mp4"
+	amp4 "github.com/abema/go-mp4"
+)
+
+const (
+	maxSamplesPerTrun = 120 * 160 // 120fps * 60 seconds
 )
 
 // Parts is a sequence of fMP4 parts.
@@ -26,10 +30,10 @@ func (ps *Parts) Unmarshal(byts []byte) error {
 	var curPart *Part
 	var moofOffset uint64
 	var curTrack *PartTrack
-	var tfdt *mp4.Tfdt
-	var tfhd *mp4.Tfhd
+	var tfdt *amp4.Tfdt
+	var tfhd *amp4.Tfhd
 
-	_, err := mp4.ReadBoxStructure(bytes.NewReader(byts), func(h *mp4.ReadHandle) (interface{}, error) {
+	_, err := amp4.ReadBoxStructure(bytes.NewReader(byts), func(h *amp4.ReadHandle) (any, error) {
 		if h.BoxInfo.IsSupportedType() {
 			switch h.BoxInfo.Type.String() {
 			case "moof":
@@ -52,7 +56,7 @@ func (ps *Parts) Unmarshal(byts []byte) error {
 				if err != nil {
 					return nil, err
 				}
-				mfhd := box.(*mp4.Mfhd)
+				mfhd := box.(*amp4.Mfhd)
 
 				curPart.SequenceNumber = mfhd.SequenceNumber
 				state = waitingTraf
@@ -63,7 +67,7 @@ func (ps *Parts) Unmarshal(byts []byte) error {
 				}
 
 				if curTrack != nil {
-					if tfdt == nil || tfhd == nil || curTrack.Samples == nil {
+					if tfdt == nil || tfhd == nil {
 						return nil, fmt.Errorf("parse error")
 					}
 				}
@@ -84,7 +88,7 @@ func (ps *Parts) Unmarshal(byts []byte) error {
 				if err != nil {
 					return nil, err
 				}
-				tfhd = box.(*mp4.Tfhd)
+				tfhd = box.(*amp4.Tfhd)
 
 				curTrack.ID = int(tfhd.TrackID)
 
@@ -97,76 +101,87 @@ func (ps *Parts) Unmarshal(byts []byte) error {
 				if err != nil {
 					return nil, err
 				}
-				tfdt = box.(*mp4.Tfdt)
+				tfdt = box.(*amp4.Tfdt)
 
-				if tfdt.FullBox.Version != 1 {
-					return nil, fmt.Errorf("unsupported tfdt version")
-				}
-
-				curTrack.BaseTime = tfdt.BaseMediaDecodeTimeV1
+				curTrack.BaseTime = tfdt.GetBaseMediaDecodeTime()
 
 			case "trun":
 				if state != waitingTfdtTfhdTrun || tfhd == nil {
 					return nil, fmt.Errorf("unexpected trun")
 				}
 
+				// prevent RAM exhaustion due to unlimited Trun unmarshaling
+				rawBox := byts[h.BoxInfo.Offset:]
+				if len(rawBox) >= 16 {
+					sampleCount := uint32(rawBox[12])<<24 | uint32(rawBox[13])<<16 | uint32(rawBox[14])<<8 | uint32(rawBox[15])
+					if sampleCount > maxSamplesPerTrun {
+						return nil, fmt.Errorf("sample count (%d) exceeds maximum (%d)", sampleCount, maxSamplesPerTrun)
+					}
+				}
+
 				box, _, err := h.ReadPayload()
 				if err != nil {
 					return nil, err
 				}
-				trun := box.(*mp4.Trun)
+				trun := box.(*amp4.Trun)
 
-				trunFlags := uint16(trun.Flags[1])<<8 | uint16(trun.Flags[2])
-				if (trunFlags & trunFlagDataOffsetPreset) == 0 {
-					return nil, fmt.Errorf("unsupported flags")
-				}
-
-				existing := len(curTrack.Samples)
-				tmp := make([]*PartSample, existing+len(trun.Entries))
-				copy(tmp, curTrack.Samples)
-				curTrack.Samples = tmp
-
-				pos := uint64(trun.DataOffset) + moofOffset
-				if uint64(len(byts)) < pos {
-					return nil, fmt.Errorf("invalid data_offset / moof_offset")
-				}
-
-				ptr := byts[pos:]
-
-				for i, e := range trun.Entries {
-					s := &PartSample{}
-
-					if (trunFlags & trunFlagSampleDurationPresent) != 0 {
-						s.Duration = e.SampleDuration
-					} else {
-						s.Duration = tfhd.DefaultSampleDuration
+				if len(trun.Entries) != 0 {
+					trunFlags := uint16(trun.Flags[1])<<8 | uint16(trun.Flags[2])
+					if (trunFlags & trunFlagDataOffsetPreset) == 0 {
+						return nil, fmt.Errorf("unsupported flags")
 					}
 
-					s.PTSOffset = e.SampleCompositionTimeOffsetV1
+					existing := len(curTrack.Samples)
+					tmp := make([]*Sample, existing+len(trun.Entries))
+					copy(tmp, curTrack.Samples)
+					curTrack.Samples = tmp
 
-					var sampleFlags uint32
-					if (trunFlags & trunFlagSampleFlagsPresent) != 0 {
-						sampleFlags = e.SampleFlags
-					} else {
-						sampleFlags = tfhd.DefaultSampleFlags
-					}
-					s.IsNonSyncSample = ((sampleFlags & sampleFlagIsNonSyncSample) != 0)
-
-					var size uint32
-					if (trunFlags & trunFlagSampleSizePresent) != 0 {
-						size = e.SampleSize
-					} else {
-						size = tfhd.DefaultSampleSize
+					pos := uint64(trun.DataOffset) + moofOffset
+					if uint64(len(byts)) < pos {
+						return nil, fmt.Errorf("invalid data_offset / moof_offset")
 					}
 
-					if len(ptr) < int(size) {
-						return nil, fmt.Errorf("invalid sample size")
+					ptr := byts[pos:]
+
+					for i, e := range trun.Entries {
+						s := &Sample{}
+
+						if (trunFlags & trunFlagSampleDurationPresent) != 0 {
+							s.Duration = e.SampleDuration
+						} else {
+							s.Duration = tfhd.DefaultSampleDuration
+						}
+
+						if trun.Version == 0 {
+							s.PTSOffset = int32(e.SampleCompositionTimeOffsetV0)
+						} else {
+							s.PTSOffset = e.SampleCompositionTimeOffsetV1
+						}
+
+						var sampleFlags uint32
+						if (trunFlags & trunFlagSampleFlagsPresent) != 0 {
+							sampleFlags = e.SampleFlags
+						} else {
+							sampleFlags = tfhd.DefaultSampleFlags
+						}
+						s.IsNonSyncSample = ((sampleFlags & sampleFlagIsNonSyncSample) != 0)
+
+						var size uint32
+						if (trunFlags & trunFlagSampleSizePresent) != 0 {
+							size = e.SampleSize
+						} else {
+							size = tfhd.DefaultSampleSize
+						}
+
+						if len(ptr) < int(size) {
+							return nil, fmt.Errorf("invalid sample size")
+						}
+
+						s.Payload = ptr[:size]
+						ptr = ptr[size:]
+
+						curTrack.Samples[existing+i] = s
 					}
-
-					s.Payload = ptr[:size]
-					ptr = ptr[size:]
-
-					curTrack.Samples[existing+i] = s
 				}
 
 			case "mdat":
@@ -175,7 +190,7 @@ func (ps *Parts) Unmarshal(byts []byte) error {
 				}
 
 				if curTrack != nil {
-					if tfdt == nil || tfhd == nil || curTrack.Samples == nil {
+					if tfdt == nil || tfhd == nil {
 						return nil, fmt.Errorf("parse error")
 					}
 				}
@@ -198,8 +213,8 @@ func (ps *Parts) Unmarshal(byts []byte) error {
 }
 
 // Marshal encodes a one or more fMP4 part.
-func (ps *Parts) Marshal(w io.WriteSeeker) error {
-	for _, p := range *ps {
+func (ps Parts) Marshal(w io.WriteSeeker) error {
+	for _, p := range ps {
 		err := p.Marshal(w)
 		if err != nil {
 			return err

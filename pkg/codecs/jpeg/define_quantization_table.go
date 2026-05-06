@@ -1,4 +1,4 @@
-package jpeg
+package jpeg //nolint:revive
 
 import (
 	"fmt"
@@ -23,7 +23,7 @@ func (m *DefineQuantizationTable) Unmarshal(buf []byte) error {
 		precision := buf[0] >> 4
 		buf = buf[1:]
 		if precision != 0 {
-			return fmt.Errorf("Precision %d is not supported", precision)
+			return fmt.Errorf("precision %d is not supported", precision)
 		}
 
 		if len(buf) < 64 {

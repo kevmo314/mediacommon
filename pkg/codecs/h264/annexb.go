@@ -1,139 +1,109 @@
 package h264
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 )
 
-// AnnexBUnmarshal decodes an access unit from the Annex-B stream format.
+// ErrAnnexBNoNALUs is returned by AnnexBUnmarshal when no NALUs have been decoded.
+var ErrAnnexBNoNALUs = errors.New("Annex-B unit doesn't contain any NALU")
+
+// ErrAnnexBNoInitialDelimiter is returned by AnnexBUnmarshal when the initial delimiter is not found.
+var ErrAnnexBNoInitialDelimiter = errors.New("initial delimiter not found")
+
+// AnnexB is an access unit that can be decoded/encoded from/to the Annex-B stream format.
 // Specification: ITU-T Rec. H.264, Annex B
-func AnnexBUnmarshal(buf []byte) ([][]byte, error) {
-	bl := len(buf)
-	initZeroCount := 0
-	start := 0
+type AnnexB [][]byte
 
-outer:
-	for {
-		if start >= bl || start >= 4 {
-			return nil, fmt.Errorf("initial delimiter not found")
-		}
-
-		switch initZeroCount {
-		case 0, 1:
-			if buf[start] != 0 {
-				return nil, fmt.Errorf("initial delimiter not found")
-			}
-			initZeroCount++
-
-		case 2, 3:
-			switch buf[start] {
-			case 1:
-				start++
-				break outer
-
-			case 0:
-
-			default:
-				return nil, fmt.Errorf("initial delimiter not found")
-			}
-			initZeroCount++
-		}
-
-		start++
+// Unmarshal decodes an access unit from the Annex-B stream format.
+func (a *AnnexB) Unmarshal(buf []byte) error {
+	var pos int
+	switch {
+	case len(buf) >= 4 && buf[0] == 0x00 && buf[1] == 0x00 && buf[2] == 0x00 && buf[3] == 0x01:
+		pos = 4
+	case len(buf) >= 3 && buf[0] == 0x00 && buf[1] == 0x00 && buf[2] == 0x01:
+		pos = 3
+	default:
+		return ErrAnnexBNoInitialDelimiter
 	}
 
-	zeroCount := 0
-	n := 0
-
-	for i := start; i < bl; i++ {
-		switch buf[i] {
-		case 0:
-			zeroCount++
-
-		case 1:
-			if zeroCount == 2 || zeroCount == 3 {
-				n++
-			}
-			zeroCount = 0
-
-		default:
-			zeroCount = 0
-		}
+	if len(buf) == pos {
+		return ErrAnnexBNoNALUs
 	}
 
-	if (n + 1) > MaxNALUsPerAccessUnit {
-		return nil, fmt.Errorf("NALU count (%d) exceeds maximum allowed (%d)",
-			n+1, MaxNALUsPerAccessUnit)
+	type naluPos struct {
+		start int
+		end   int
 	}
 
-	ret := make([][]byte, n+1)
-	pos := 0
-	start = initZeroCount + 1
-	zeroCount = 0
-	delimStart := 0
+	positions := make([]naluPos, 0, 8)
 	auSize := 0
 
-	for i := start; i < bl; i++ {
-		switch buf[i] {
-		case 0:
-			if zeroCount == 0 {
-				delimStart = i
-			}
-			zeroCount++
+	for pos < len(buf) {
+		i := bytes.Index(buf[pos:], []byte{0x00, 0x00, 0x01})
 
-		case 1:
-			if zeroCount == 2 || zeroCount == 3 {
-				l := delimStart - start
-
-				if l == 0 {
-					return nil, fmt.Errorf("invalid NALU")
+		if i == -1 {
+			remaining := len(buf) - pos
+			if remaining > 0 {
+				if (auSize + remaining) > MaxAccessUnitSize {
+					return fmt.Errorf("access unit size (%d) is too big, maximum is %d", auSize+remaining, MaxAccessUnitSize)
 				}
-
-				if (auSize + l) > MaxAccessUnitSize {
-					return nil, fmt.Errorf("access unit size (%d) is too big, maximum is %d", auSize+l, MaxAccessUnitSize)
-				}
-
-				ret[pos] = buf[start:delimStart]
-				pos++
-				auSize += l
-				start = i + 1
+				positions = append(positions, naluPos{start: pos, end: len(buf)})
 			}
-			zeroCount = 0
-
-		default:
-			zeroCount = 0
+			break
 		}
+
+		var naluEnd int
+		if i > 0 && buf[pos+i-1] == 0x00 {
+			naluEnd = pos + i - 1
+		} else {
+			naluEnd = pos + i
+		}
+
+		naluSize := naluEnd - pos
+		if naluSize > 0 {
+			auSize += naluSize
+			if auSize > MaxAccessUnitSize {
+				return fmt.Errorf("access unit size (%d) is too big, maximum is %d", auSize, MaxAccessUnitSize)
+			}
+			positions = append(positions, naluPos{start: pos, end: naluEnd})
+		}
+
+		pos += i + 3
 	}
 
-	l := bl - start
-
-	if l == 0 {
-		return nil, fmt.Errorf("invalid NALU")
+	if len(positions) == 0 {
+		return ErrAnnexBNoNALUs
 	}
 
-	if (auSize + l) > MaxAccessUnitSize {
-		return nil, fmt.Errorf("access unit size (%d) is too big, maximum is %d", auSize+l, MaxAccessUnitSize)
+	if len(positions) > MaxNALUsPerAccessUnit {
+		return fmt.Errorf("NALU count (%d) exceeds maximum allowed (%d)",
+			len(positions), MaxNALUsPerAccessUnit)
 	}
 
-	ret[pos] = buf[start:bl]
+	*a = make([][]byte, len(positions))
+	for i := range positions {
+		(*a)[i] = buf[positions[i].start:positions[i].end]
+	}
 
-	return ret, nil
+	return nil
 }
 
-func annexBMarshalSize(au [][]byte) int {
+func (a AnnexB) marshalSize() int {
 	n := 0
-	for _, nalu := range au {
+	for _, nalu := range a {
 		n += 4 + len(nalu)
 	}
 	return n
 }
 
-// AnnexBMarshal encodes an access unit into the Annex-B stream format.
-// Specification: ITU-T Rec. H.264, Annex B
-func AnnexBMarshal(au [][]byte) ([]byte, error) {
-	buf := make([]byte, annexBMarshalSize(au))
+// Marshal encodes an access unit into the Annex-B stream format.
+func (a AnnexB) Marshal() ([]byte, error) {
+	buf := make([]byte, a.marshalSize())
 	pos := 0
 
-	for _, nalu := range au {
+	for _, nalu := range a {
 		pos += copy(buf[pos:], []byte{0x00, 0x00, 0x00, 0x01})
 		pos += copy(buf[pos:], nalu)
 	}

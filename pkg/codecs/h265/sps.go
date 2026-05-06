@@ -3,8 +3,8 @@ package h265
 import (
 	"fmt"
 
-	"github.com/bluenviron/mediacommon/pkg/bits"
-	"github.com/bluenviron/mediacommon/pkg/codecs/h264"
+	"github.com/bluenviron/mediacommon/v2/pkg/bits"
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h264"
 )
 
 const (
@@ -27,15 +27,66 @@ var subHeightC = []uint32{
 	1,
 }
 
-// SPS_DefaultDisplayWindow is a default display window.
-type SPS_DefaultDisplayWindow struct { //nolint:revive
+// SPS_ScalingListData is a scaling list data.
+type SPS_ScalingListData struct { //nolint:revive
+	ScalingListPredModeFlag      [4][6]bool
+	ScalingListPredmatrixIDDelta [4][6]uint32
+	ScalingListDcCoefMinus8      [4][6]int32
+}
+
+func (d *SPS_ScalingListData) unmarshal(buf []byte, pos *int) error {
+	for sizeID := range 4 {
+		var matrixIDIncr int
+		if sizeID == 3 {
+			matrixIDIncr = 3
+		} else {
+			matrixIDIncr = 1
+		}
+
+		for matrixID := 0; matrixID < 6; matrixID += matrixIDIncr {
+			var err error
+			d.ScalingListPredModeFlag[sizeID][matrixID], err = bits.ReadFlag(buf, pos)
+			if err != nil {
+				return err
+			}
+
+			if !d.ScalingListPredModeFlag[sizeID][matrixID] {
+				d.ScalingListPredmatrixIDDelta[sizeID][matrixID], err = bits.ReadGolombUnsigned(buf, pos)
+				if err != nil {
+					return err
+				}
+			} else {
+				coefNum := min(64, 1<<(4+(sizeID<<1)))
+
+				if sizeID > 1 {
+					d.ScalingListDcCoefMinus8[sizeID-2][matrixID], err = bits.ReadGolombSigned(buf, pos)
+					if err != nil {
+						return err
+					}
+				}
+
+				for range coefNum {
+					_, err = bits.ReadGolombSigned(buf, pos) // scalingListDeltaCoef
+					if err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// SPS_Window is a window.
+type SPS_Window struct { //nolint:revive
 	LeftOffset   uint32
 	RightOffset  uint32
 	TopOffset    uint32
 	BottomOffset uint32
 }
 
-func (w *SPS_DefaultDisplayWindow) unmarshal(buf []byte, pos *int) error {
+func (w *SPS_Window) unmarshal(buf []byte, pos *int) error {
 	var err error
 	w.LeftOffset, err = bits.ReadGolombUnsigned(buf, pos)
 	if err != nil {
@@ -124,7 +175,7 @@ type SPS_VUI struct { //nolint:revive
 	NeutralChromaIndicationFlag bool
 	FieldSeqFlag                bool
 	FrameFieldInfoPresentFlag   bool
-	DefaultDisplayWindow        *SPS_DefaultDisplayWindow
+	DefaultDisplayWindow        *SPS_Window
 	TimingInfo                  *SPS_TimingInfo
 }
 
@@ -231,7 +282,7 @@ func (v *SPS_VUI) unmarshal(buf []byte, pos *int) error {
 	}
 
 	if defaultDisplayWindowFlag {
-		v.DefaultDisplayWindow = &SPS_DefaultDisplayWindow{}
+		v.DefaultDisplayWindow = &SPS_Window{}
 		err = v.DefaultDisplayWindow.unmarshal(buf, pos)
 		if err != nil {
 			return err
@@ -247,7 +298,7 @@ func (v *SPS_VUI) unmarshal(buf []byte, pos *int) error {
 
 	if timingInfoPresentFlag {
 		v.TimingInfo = &SPS_TimingInfo{}
-		err := v.TimingInfo.unmarshal(buf, pos)
+		err = v.TimingInfo.unmarshal(buf, pos)
 		if err != nil {
 			return err
 		}
@@ -293,7 +344,7 @@ func (p *SPS_ProfileTierLevel) unmarshal(buf []byte, pos *int, maxSubLayersMinus
 	p.GeneralTierFlag = uint8(bits.ReadBitsUnsafe(buf, pos, 1))
 	p.GeneralProfileIdc = uint8(bits.ReadBitsUnsafe(buf, pos, 5))
 
-	for j := 0; j < 32; j++ {
+	for j := range 32 {
 		p.GeneralProfileCompatibilityFlag[j] = bits.ReadFlagUnsafe(buf, pos)
 	}
 
@@ -331,19 +382,19 @@ func (p *SPS_ProfileTierLevel) unmarshal(buf []byte, pos *int, maxSubLayersMinus
 		p.SubLayerProfilePresentFlag = make([]bool, maxSubLayersMinus1)
 		p.SubLayerLevelPresentFlag = make([]bool, maxSubLayersMinus1)
 
-		err := bits.HasSpace(buf, *pos, int(2*maxSubLayersMinus1))
+		err = bits.HasSpace(buf, *pos, int(2*maxSubLayersMinus1))
 		if err != nil {
 			return err
 		}
 
-		for j := uint8(0); j < maxSubLayersMinus1; j++ {
+		for j := range maxSubLayersMinus1 {
 			p.SubLayerProfilePresentFlag[j] = bits.ReadFlagUnsafe(buf, pos)
 			p.SubLayerLevelPresentFlag[j] = bits.ReadFlagUnsafe(buf, pos)
 		}
 	}
 
 	if maxSubLayersMinus1 > 0 {
-		err := bits.HasSpace(buf, *pos, int(8-maxSubLayersMinus1)*2)
+		err = bits.HasSpace(buf, *pos, int(8-maxSubLayersMinus1)*2)
 		if err != nil {
 			return err
 		}
@@ -351,7 +402,7 @@ func (p *SPS_ProfileTierLevel) unmarshal(buf []byte, pos *int, maxSubLayersMinus
 		*pos += int(8-maxSubLayersMinus1) * 2
 	}
 
-	for i := uint8(0); i < maxSubLayersMinus1; i++ {
+	for i := range maxSubLayersMinus1 {
 		if p.SubLayerProfilePresentFlag[i] {
 			return fmt.Errorf("SubLayerProfilePresentFlag not supported yet")
 		}
@@ -359,39 +410,6 @@ func (p *SPS_ProfileTierLevel) unmarshal(buf []byte, pos *int, maxSubLayersMinus
 		if p.SubLayerLevelPresentFlag[i] {
 			return fmt.Errorf("SubLayerLevelPresentFlag not supported yet")
 		}
-	}
-
-	return nil
-}
-
-// SPS_ConformanceWindow is a conformance window of a SPS.
-type SPS_ConformanceWindow struct { //nolint:revive
-	LeftOffset   uint32
-	RightOffset  uint32
-	TopOffset    uint32
-	BottomOffset uint32
-}
-
-func (c *SPS_ConformanceWindow) unmarshal(buf []byte, pos *int) error {
-	var err error
-	c.LeftOffset, err = bits.ReadGolombUnsigned(buf, pos)
-	if err != nil {
-		return err
-	}
-
-	c.RightOffset, err = bits.ReadGolombUnsigned(buf, pos)
-	if err != nil {
-		return err
-	}
-
-	c.TopOffset, err = bits.ReadGolombUnsigned(buf, pos)
-	if err != nil {
-		return err
-	}
-
-	c.BottomOffset, err = bits.ReadGolombUnsigned(buf, pos)
-	if err != nil {
-		return err
 	}
 
 	return nil
@@ -405,9 +423,9 @@ type SPS_ShortTermRefPicSet struct { //nolint:revive
 	AbsDeltaRpsMinus1            uint32
 	NumNegativePics              uint32
 	NumPositivePics              uint32
-	DeltaPocS0Minus1             []uint32
+	DeltaPocS0                   []int32
 	UsedByCurrPicS0Flag          []bool
-	DeltaPocS1Minus1             []uint32
+	DeltaPocS1                   []int32
 	UsedByCurrPicS1Flag          []bool
 }
 
@@ -441,23 +459,95 @@ func (r *SPS_ShortTermRefPicSet) unmarshal(buf []byte, pos *int, stRpsIdx uint32
 			return err
 		}
 
+		var s int32
+		if r.DeltaRpsSign {
+			s = 1
+		}
+		deltaRps := (1 - 2*s) * (int32(r.AbsDeltaRpsMinus1) + 1)
+
 		refRpsIdx := stRpsIdx - (r.DeltaIdxMinus1 + 1)
-		numDeltaPocs := shortTermRefPicSets[refRpsIdx].NumNegativePics + shortTermRefPicSets[refRpsIdx].NumPositivePics
+		if refRpsIdx >= uint32(len(shortTermRefPicSets)) {
+			return fmt.Errorf("invalid refRpsIdx")
+		}
+
+		refRPS := shortTermRefPicSets[refRpsIdx]
+		numDeltaPocs := refRPS.NumNegativePics + refRPS.NumPositivePics
+		usedByCurrPicFlag := make([]bool, numDeltaPocs+1)
+
+		useDeltaFlag := make([]bool, numDeltaPocs+1)
+		for i := range useDeltaFlag {
+			useDeltaFlag[i] = true
+		}
 
 		for j := uint32(0); j <= numDeltaPocs; j++ {
-			var usedByCurrPicFlag bool
-			usedByCurrPicFlag, err = bits.ReadFlag(buf, pos)
+			usedByCurrPicFlag[j], err = bits.ReadFlag(buf, pos)
 			if err != nil {
 				return err
 			}
 
-			if usedByCurrPicFlag {
-				_, err = bits.ReadGolombUnsigned(buf, pos) // use_delta_flag
+			if !usedByCurrPicFlag[j] {
+				useDeltaFlag[j], err = bits.ReadFlag(buf, pos)
 				if err != nil {
 					return err
 				}
 			}
 		}
+
+		i := uint32(0)
+
+		for j := (int32(refRPS.NumPositivePics) - 1); j >= 0; j-- {
+			dPoc := refRPS.DeltaPocS1[j] + deltaRps
+			if dPoc < 0 && useDeltaFlag[refRPS.NumNegativePics+uint32(j)] {
+				r.DeltaPocS0 = append(r.DeltaPocS0, dPoc)
+				r.UsedByCurrPicS0Flag = append(r.UsedByCurrPicS0Flag, usedByCurrPicFlag[refRPS.NumNegativePics+uint32(j)])
+				i++
+			}
+		}
+
+		if deltaRps < 0 && useDeltaFlag[numDeltaPocs] {
+			r.DeltaPocS0 = append(r.DeltaPocS0, deltaRps)
+			r.UsedByCurrPicS0Flag = append(r.UsedByCurrPicS0Flag, usedByCurrPicFlag[numDeltaPocs])
+			i++
+		}
+
+		for j := uint32(0); j < refRPS.NumNegativePics; j++ {
+			dPoc := refRPS.DeltaPocS0[j] + deltaRps
+			if dPoc < 0 && useDeltaFlag[j] {
+				r.DeltaPocS0 = append(r.DeltaPocS0, dPoc)
+				r.UsedByCurrPicS0Flag = append(r.UsedByCurrPicS0Flag, usedByCurrPicFlag[j])
+				i++
+			}
+		}
+
+		r.NumNegativePics = i
+
+		i = uint32(0)
+
+		for j := (int32(refRPS.NumNegativePics) - 1); j >= 0; j-- {
+			dPoc := refRPS.DeltaPocS0[j] + deltaRps
+			if dPoc > 0 && useDeltaFlag[j] {
+				r.DeltaPocS1 = append(r.DeltaPocS1, dPoc)
+				r.UsedByCurrPicS1Flag = append(r.UsedByCurrPicS1Flag, usedByCurrPicFlag[j])
+				i++
+			}
+		}
+
+		if deltaRps > 0 && useDeltaFlag[numDeltaPocs] {
+			r.DeltaPocS1 = append(r.DeltaPocS1, deltaRps)
+			r.UsedByCurrPicS1Flag = append(r.UsedByCurrPicS1Flag, usedByCurrPicFlag[numDeltaPocs])
+			i++
+		}
+
+		for j := uint32(0); j < refRPS.NumPositivePics; j++ {
+			dPoc := refRPS.DeltaPocS1[j] + deltaRps
+			if dPoc > 0 && useDeltaFlag[refRPS.NumNegativePics+j] {
+				r.DeltaPocS1 = append(r.DeltaPocS1, dPoc)
+				r.UsedByCurrPicS1Flag = append(r.UsedByCurrPicS1Flag, usedByCurrPicFlag[refRPS.NumNegativePics+j])
+				i++
+			}
+		}
+
+		r.NumPositivePics = i
 	} else {
 		r.NumNegativePics, err = bits.ReadGolombUnsigned(buf, pos)
 		if err != nil {
@@ -474,13 +564,20 @@ func (r *SPS_ShortTermRefPicSet) unmarshal(buf []byte, pos *int, stRpsIdx uint32
 				return fmt.Errorf("num_negative_pics exceeds %d", maxNegativePics)
 			}
 
-			r.DeltaPocS0Minus1 = make([]uint32, r.NumNegativePics)
+			r.DeltaPocS0 = make([]int32, r.NumNegativePics)
 			r.UsedByCurrPicS0Flag = make([]bool, r.NumNegativePics)
 
 			for i := uint32(0); i < r.NumNegativePics; i++ {
-				r.DeltaPocS0Minus1[i], err = bits.ReadGolombUnsigned(buf, pos)
+				var deltaPocS0Minus1 uint32
+				deltaPocS0Minus1, err = bits.ReadGolombUnsigned(buf, pos)
 				if err != nil {
 					return err
+				}
+
+				if i == 0 {
+					r.DeltaPocS0[i] = -int32(deltaPocS0Minus1 + 1)
+				} else {
+					r.DeltaPocS0[i] = r.DeltaPocS0[i-1] - (int32(deltaPocS0Minus1) + 1)
 				}
 
 				r.UsedByCurrPicS0Flag[i], err = bits.ReadFlag(buf, pos)
@@ -495,13 +592,20 @@ func (r *SPS_ShortTermRefPicSet) unmarshal(buf []byte, pos *int, stRpsIdx uint32
 				return fmt.Errorf("num_positive_pics exceeds %d", maxPositivePics)
 			}
 
-			r.DeltaPocS1Minus1 = make([]uint32, r.NumPositivePics)
+			r.DeltaPocS1 = make([]int32, r.NumPositivePics)
 			r.UsedByCurrPicS1Flag = make([]bool, r.NumPositivePics)
 
 			for i := uint32(0); i < r.NumPositivePics; i++ {
-				r.DeltaPocS1Minus1[i], err = bits.ReadGolombUnsigned(buf, pos)
+				var deltaPocS1Minus1 uint32
+				deltaPocS1Minus1, err = bits.ReadGolombUnsigned(buf, pos)
 				if err != nil {
 					return err
+				}
+
+				if i == 0 {
+					r.DeltaPocS1[i] = int32(deltaPocS1Minus1) + 1
+				} else {
+					r.DeltaPocS1[i] = r.DeltaPocS1[i-1] + int32(deltaPocS1Minus1) + 1
 				}
 
 				r.UsedByCurrPicS1Flag[i], err = bits.ReadFlag(buf, pos)
@@ -527,7 +631,7 @@ type SPS struct {
 	SeparateColourPlaneFlag              bool
 	PicWidthInLumaSamples                uint32
 	PicHeightInLumaSamples               uint32
-	ConformanceWindow                    *SPS_ConformanceWindow
+	ConformanceWindow                    *SPS_Window
 	BitDepthLumaMinus8                   uint32
 	BitDepthChromaMinus8                 uint32
 	Log2MaxPicOrderCntLsbMinus4          uint32
@@ -542,7 +646,7 @@ type SPS struct {
 	MaxTransformHierarchyDepthInter      uint32
 	MaxTransformHierarchyDepthIntra      uint32
 	ScalingListEnabledFlag               bool
-	ScalingListDataPresentFlag           bool
+	ScalingListData                      *SPS_ScalingListData
 	AmpEnabledFlag                       bool
 	SampleAdaptiveOffsetEnabledFlag      bool
 	PcmEnabledFlag                       bool
@@ -599,6 +703,11 @@ func (s *SPS) Unmarshal(buf []byte) error {
 		return err
 	}
 
+	// this prevents a panic in Marshal()
+	if s.ChromaFormatIdc > 3 {
+		return fmt.Errorf("invalid chroma_format_idc")
+	}
+
 	if s.ChromaFormatIdc == 3 {
 		s.SeparateColourPlaneFlag, err = bits.ReadFlag(buf, &pos)
 		if err != nil {
@@ -622,7 +731,7 @@ func (s *SPS) Unmarshal(buf []byte) error {
 	}
 
 	if conformanceWindowFlag {
-		s.ConformanceWindow = &SPS_ConformanceWindow{}
+		s.ConformanceWindow = &SPS_Window{}
 		err = s.ConformanceWindow.unmarshal(buf, &pos)
 		if err != nil {
 			return err
@@ -715,13 +824,18 @@ func (s *SPS) Unmarshal(buf []byte) error {
 	}
 
 	if s.ScalingListEnabledFlag {
-		s.ScalingListDataPresentFlag, err = bits.ReadFlag(buf, &pos)
+		var scalingListDataPresentFlag bool
+		scalingListDataPresentFlag, err = bits.ReadFlag(buf, &pos)
 		if err != nil {
 			return err
 		}
 
-		if s.ScalingListDataPresentFlag {
-			return fmt.Errorf("ScalingListDataPresentFlag not supported yet")
+		if scalingListDataPresentFlag {
+			s.ScalingListData = &SPS_ScalingListData{}
+			err = s.ScalingListData.unmarshal(buf, &pos)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -777,7 +891,7 @@ func (s *SPS) Unmarshal(buf []byte) error {
 
 		s.ShortTermRefPicSets = make([]*SPS_ShortTermRefPicSet, numShortTermRefPicSets)
 
-		for i := uint32(0); i < numShortTermRefPicSets; i++ {
+		for i := range numShortTermRefPicSets {
 			s.ShortTermRefPicSets[i] = &SPS_ShortTermRefPicSet{}
 			err = s.ShortTermRefPicSets[i].unmarshal(buf, &pos, i, numShortTermRefPicSets, s.ShortTermRefPicSets)
 			if err != nil {
@@ -822,7 +936,7 @@ func (s *SPS) Unmarshal(buf []byte) error {
 
 	if vuiParametersPresentFlag {
 		s.VUI = &SPS_VUI{}
-		err := s.VUI.unmarshal(buf, &pos)
+		err = s.VUI.unmarshal(buf, &pos)
 		if err != nil {
 			return err
 		}

@@ -5,13 +5,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"testing"
 
 	"github.com/asticode/go-astits"
 	"github.com/stretchr/testify/require"
 
-	"github.com/bluenviron/mediacommon/pkg/codecs/h265"
-	"github.com/bluenviron/mediacommon/pkg/codecs/mpeg4audio"
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/h265"
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
+	"github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts/codecs"
+	"github.com/bluenviron/mediacommon/v2/pkg/formats/mpegts/substructs"
 )
 
 var testH265SPS = []byte{
@@ -52,7 +55,7 @@ var casesReadWriter = []struct {
 		"h265",
 		&Track{
 			PID:   257,
-			Codec: &CodecH265{},
+			Codec: &codecs.H265{},
 		},
 		[]sample{
 			{
@@ -99,8 +102,8 @@ var casesReadWriter = []struct {
 			},
 			{ // PES
 				AdaptationField: &astits.PacketAdaptationField{
-					Length:                88,
-					StuffingLength:        81,
+					Length:                81,
+					StuffingLength:        74,
 					RandomAccessIndicator: true,
 					HasPCR:                true,
 					PCR:                   &astits.ClockReference{Base: 2691000},
@@ -114,22 +117,23 @@ var casesReadWriter = []struct {
 				Payload: []byte{
 					0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x80,
 					0x05, 0x21, 0x00, 0xa5, 0x65, 0xc1, 0x00, 0x00,
-					0x00, 0x01, 0x42, 0x01, 0x01, 0x02, 0x20, 0x00,
-					0x00, 0x03, 0x00, 0xb0, 0x00, 0x00, 0x03, 0x00,
-					0x00, 0x03, 0x00, 0x7b, 0xa0, 0x07, 0x82, 0x00,
-					0x88, 0x7d, 0xb6, 0x71, 0x8b, 0x92, 0x44, 0x80,
-					0x53, 0x88, 0x88, 0x92, 0xcf, 0x24, 0xa6, 0x92,
-					0x72, 0xc9, 0x12, 0x49, 0x22, 0xdc, 0x91, 0xaa,
-					0x48, 0xfc, 0xa2, 0x23, 0xff, 0x00, 0x01, 0x00,
-					0x01, 0x6a, 0x02, 0x02, 0x02, 0x01, 0x00, 0x00,
-					0x00, 0x01, 0x44, 0x01, 0xc0, 0x25, 0x2f, 0x05,
-					0x32, 0x40, 0x00, 0x00, 0x00, 0x01, 0x2a,
+					0x00, 0x01, 0x46, 0x01, 0x50, 0x00, 0x00, 0x00,
+					0x01, 0x42, 0x01, 0x01, 0x02, 0x20, 0x00, 0x00,
+					0x03, 0x00, 0xb0, 0x00, 0x00, 0x03, 0x00, 0x00,
+					0x03, 0x00, 0x7b, 0xa0, 0x07, 0x82, 0x00, 0x88,
+					0x7d, 0xb6, 0x71, 0x8b, 0x92, 0x44, 0x80, 0x53,
+					0x88, 0x88, 0x92, 0xcf, 0x24, 0xa6, 0x92, 0x72,
+					0xc9, 0x12, 0x49, 0x22, 0xdc, 0x91, 0xaa, 0x48,
+					0xfc, 0xa2, 0x23, 0xff, 0x00, 0x01, 0x00, 0x01,
+					0x6a, 0x02, 0x02, 0x02, 0x01, 0x00, 0x00, 0x00,
+					0x01, 0x44, 0x01, 0xc0, 0x25, 0x2f, 0x05, 0x32,
+					0x40, 0x00, 0x00, 0x00, 0x01, 0x2a,
 				},
 			},
 			{ // PES
 				AdaptationField: &astits.PacketAdaptationField{
-					Length:         159,
-					StuffingLength: 158,
+					Length:         152,
+					StuffingLength: 151,
 				},
 				Header: astits.PacketHeader{
 					ContinuityCounter:         1,
@@ -141,7 +145,8 @@ var casesReadWriter = []struct {
 				Payload: []byte{
 					0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0xc0,
 					0x0a, 0x31, 0x00, 0xaf, 0xe4, 0x01, 0x11, 0x00,
-					0xab, 0x24, 0xe1, 0x00, 0x00, 0x00, 0x01, 0x00,
+					0xab, 0x24, 0xe1, 0x00, 0x00, 0x00, 0x01, 0x46,
+					0x01, 0x50, 0x00, 0x00, 0x00, 0x01, 0x00,
 				},
 			},
 		},
@@ -150,7 +155,7 @@ var casesReadWriter = []struct {
 		"h264",
 		&Track{
 			PID:   256,
-			Codec: &CodecH264{},
+			Codec: &codecs.H264{},
 		},
 		[]sample{
 			{
@@ -197,8 +202,8 @@ var casesReadWriter = []struct {
 			},
 			{ // PES
 				AdaptationField: &astits.PacketAdaptationField{
-					Length:                130,
-					StuffingLength:        123,
+					Length:                124,
+					StuffingLength:        117,
 					RandomAccessIndicator: true,
 					HasPCR:                true,
 					PCR:                   &astits.ClockReference{Base: 2691000},
@@ -212,17 +217,18 @@ var casesReadWriter = []struct {
 				Payload: []byte{
 					0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x80,
 					0x05, 0x21, 0x00, 0xa5, 0x65, 0xc1, 0x00, 0x00,
-					0x00, 0x01, 0x67, 0x42, 0xc0, 0x28, 0xd9, 0x00,
-					0x78, 0x02, 0x27, 0xe5, 0x84, 0x00, 0x00, 0x03,
-					0x00, 0x04, 0x00, 0x00, 0x03, 0x00, 0xf0, 0x3c,
-					0x60, 0xc9, 0x20, 0x00, 0x00, 0x00, 0x01, 0x08,
-					0x00, 0x00, 0x00, 0x01, 0x05,
+					0x00, 0x01, 0x09, 0xf0, 0x00, 0x00, 0x00, 0x01,
+					0x67, 0x42, 0xc0, 0x28, 0xd9, 0x00, 0x78, 0x02,
+					0x27, 0xe5, 0x84, 0x00, 0x00, 0x03, 0x00, 0x04,
+					0x00, 0x00, 0x03, 0x00, 0xf0, 0x3c, 0x60, 0xc9,
+					0x20, 0x00, 0x00, 0x00, 0x01, 0x08, 0x00, 0x00,
+					0x00, 0x01, 0x05,
 				},
 			},
 			{ // PES
 				AdaptationField: &astits.PacketAdaptationField{
-					Length:         159,
-					StuffingLength: 158,
+					Length:         153,
+					StuffingLength: 152,
 				},
 				Header: astits.PacketHeader{
 					ContinuityCounter:         1,
@@ -234,7 +240,8 @@ var casesReadWriter = []struct {
 				Payload: []byte{
 					0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0xc0,
 					0x0a, 0x31, 0x00, 0xaf, 0xe4, 0x01, 0x11, 0x00,
-					0xab, 0x24, 0xe1, 0x00, 0x00, 0x00, 0x01, 0x01,
+					0xab, 0x24, 0xe1, 0x00, 0x00, 0x00, 0x01, 0x09,
+					0xf0, 0x00, 0x00, 0x00, 0x01, 0x01,
 				},
 			},
 		},
@@ -243,7 +250,7 @@ var casesReadWriter = []struct {
 		"mpeg-4 video",
 		&Track{
 			PID:   257,
-			Codec: &CodecMPEG4Video{},
+			Codec: &codecs.MPEG4Video{},
 		},
 		[]sample{
 			{
@@ -303,7 +310,7 @@ var casesReadWriter = []struct {
 		"mpeg-1 video",
 		&Track{
 			PID:   257,
-			Codec: &CodecMPEG1Video{},
+			Codec: &codecs.MPEG1Video{},
 		},
 		[]sample{
 			{
@@ -363,7 +370,10 @@ var casesReadWriter = []struct {
 		"opus",
 		&Track{
 			PID: 257,
-			Codec: &CodecOpus{
+			Codec: &codecs.Opus{
+				Desc: &substructs.OpusAudioDescriptor{
+					ChannelConfigCode: 2,
+				},
 				ChannelCount: 2,
 			},
 		},
@@ -477,11 +487,12 @@ var casesReadWriter = []struct {
 		"mpeg-4 audio",
 		&Track{
 			PID: 257,
-			Codec: &CodecMPEG4Audio{
+			Codec: &codecs.MPEG4Audio{
 				Config: mpeg4audio.AudioSpecificConfig{
-					Type:         2,
-					SampleRate:   48000,
-					ChannelCount: 2,
+					Type:          2,
+					SampleRate:    48000,
+					ChannelConfig: 2,
+					ChannelCount:  2,
 				},
 			},
 		},
@@ -541,10 +552,70 @@ var casesReadWriter = []struct {
 		},
 	},
 	{
+		"mpeg-4 audio LATM",
+		&Track{
+			PID:   257,
+			Codec: &codecs.MPEG4AudioLATM{},
+		},
+		[]sample{
+			{
+				30 * 90000,
+				30 * 90000,
+				[][]byte{{3}, {2}},
+			},
+		},
+		[]*astits.Packet{
+			{ // PMT
+				Header: astits.PacketHeader{
+					HasPayload:                true,
+					PayloadUnitStartIndicator: true,
+					PID:                       0,
+				},
+				Payload: append([]byte{
+					0x00, 0x00, 0xb0, 0x0d, 0x00, 0x00, 0xc1, 0x00,
+					0x00, 0x00, 0x01, 0xf0, 0x00, 0x71, 0x10, 0xd8,
+					0x78,
+				}, bytes.Repeat([]byte{0xff}, 167)...),
+			},
+			{ // PAT
+				Header: astits.PacketHeader{
+					HasPayload:                true,
+					PayloadUnitStartIndicator: true,
+					PID:                       4096,
+				},
+				Payload: append([]byte{
+					0x00, 0x02, 0xb0, 0x12, 0x00, 0x01, 0xc1, 0x00,
+					0x00, 0xe1, 0x01, 0xf0, 0x00, 0x11, 0xe1, 0x01,
+					0xf0, 0x00, 0x9c, 0x37, 0xf5, 0x07,
+				}, bytes.Repeat([]byte{0xff}, 162)...),
+			},
+			{ // PES
+				AdaptationField: &astits.PacketAdaptationField{
+					Length:                161,
+					StuffingLength:        154,
+					HasPCR:                true,
+					PCR:                   &astits.ClockReference{Base: 2691000},
+					RandomAccessIndicator: true,
+				},
+				Header: astits.PacketHeader{
+					HasAdaptationField:        true,
+					HasPayload:                true,
+					PayloadUnitStartIndicator: true,
+					PID:                       257,
+				},
+				Payload: []byte{
+					0x00, 0x00, 0x01, 0xc0, 0x00, 0x10, 0x80, 0x80,
+					0x05, 0x21, 0x00, 0xa5, 0x65, 0xc1, 0x56, 0xe0,
+					0x01, 0x03, 0x56, 0xe0, 0x01, 0x02,
+				},
+			},
+		},
+	},
+	{
 		"mpeg-1 audio",
 		&Track{
 			PID:   257,
-			Codec: &CodecMPEG1Audio{},
+			Codec: &codecs.MPEG1Audio{},
 		},
 		[]sample{
 			{
@@ -671,7 +742,7 @@ var casesReadWriter = []struct {
 		"ac-3",
 		&Track{
 			PID: 257,
-			Codec: &CodecAC3{
+			Codec: &codecs.AC3{
 				SampleRate:   48000,
 				ChannelCount: 1,
 			},
@@ -752,10 +823,14 @@ var casesReadWriter = []struct {
 					PID:                       4096,
 				},
 				Payload: append([]byte{
-					0x00, 0x02, 0xb0, 0x12, 0x00, 0x01, 0xc1, 0x00,
+					// PMT with AC-3 descriptor (ETSI EN 300 468)
+					0x00, 0x02, 0xb0, 0x17, 0x00, 0x01, 0xc1, 0x00,
 					0x00, 0xe1, 0x01, 0xf0, 0x00, 0x81, 0xe1, 0x01,
-					0xf0, 0x00, 0x12, 0x71, 0xfd, 0xb7,
-				}, bytes.Repeat([]byte{0xff}, 162)...),
+					// ES info length=5, AC-3 descriptor tag=0x6a, len=3, flags=0xcf, component_type=0x05, bsid=0x08
+					0xf0, 0x05, 0x6a, 0x03, 0xcf, 0x05, 0x08,
+					// CRC32
+					0x35, 0x4a, 0x57, 0xb7,
+				}, bytes.Repeat([]byte{0xff}, 157)...),
 			},
 			{ // PES
 				AdaptationField: &astits.PacketAdaptationField{
@@ -850,6 +925,223 @@ var casesReadWriter = []struct {
 			},
 		},
 	},
+	{
+		"e-ac-3",
+		&Track{
+			PID: 257,
+			Codec: &codecs.EAC3{
+				SampleRate:   48000,
+				ChannelCount: 2,
+			},
+		},
+		[]sample{
+			{
+				30 * 90000,
+				30 * 90000,
+				// E-AC-3 frame: sync word 0x0B77, bsid=16
+				// strmtyp=0, substreamid=0, frmsiz=63 (128 bytes)
+				// fscod=0 (48kHz), numblkscod=3 (6 blocks)
+				// acmod=2 (stereo), lfeon=0, bsid=16
+				[][]byte{append([]byte{
+					0x0b, 0x77, 0x00, 0x3f, 0x34, 0x80,
+				}, bytes.Repeat([]byte{0x00}, 122)...)},
+			},
+		},
+		[]*astits.Packet{
+			{ // PMT
+				Header: astits.PacketHeader{
+					HasPayload:                true,
+					PayloadUnitStartIndicator: true,
+					PID:                       0,
+				},
+				Payload: append([]byte{
+					0x00, 0x00, 0xb0, 0x0d, 0x00, 0x00, 0xc1, 0x00,
+					0x00, 0x00, 0x01, 0xf0, 0x00, 0x71, 0x10, 0xd8,
+					0x78,
+				}, bytes.Repeat([]byte{0xff}, 167)...),
+			},
+			{ // PAT
+				Header: astits.PacketHeader{
+					HasPayload:                true,
+					PayloadUnitStartIndicator: true,
+					PID:                       4096,
+				},
+				Payload: append([]byte{
+					// PMT with E-AC-3 descriptor (ETSI EN 300 468)
+					0x00, 0x02, 0xb0, 0x17, 0x00, 0x01, 0xc1, 0x00,
+					0x00, 0xe1, 0x01, 0xf0, 0x00, 0x87, 0xe1, 0x01,
+					// ES info length=5, E-AC-3 descriptor tag=0x7a, len=3, flags=0xc0, component_type=0x05, bsid=0x10
+					0xf0, 0x05, 0x7a, 0x03, 0xc0, 0x05, 0x10,
+					// CRC32
+					0xd9, 0x6f, 0xab, 0x55,
+				}, bytes.Repeat([]byte{0xff}, 157)...),
+			},
+			{ // PES
+				AdaptationField: &astits.PacketAdaptationField{
+					Length:                41,
+					StuffingLength:        34,
+					HasPCR:                true,
+					PCR:                   &astits.ClockReference{Base: 2691000},
+					RandomAccessIndicator: true,
+				},
+				Header: astits.PacketHeader{
+					HasAdaptationField:        true,
+					HasPayload:                true,
+					PayloadUnitStartIndicator: true,
+					PID:                       257,
+				},
+				Payload: append([]byte{
+					// PES header: start code + stream_id + length (0x88=136 = 8 header + 128 frame)
+					0x00, 0x00, 0x01, 0xc0, 0x00, 0x88, 0x80, 0x80,
+					0x05, 0x21, 0x00, 0xa5, 0x65, 0xc1,
+					// E-AC-3 frame (128 bytes)
+					0x0b, 0x77, 0x00, 0x3f, 0x34, 0x80,
+				}, bytes.Repeat([]byte{0x00}, 122)...),
+			},
+		},
+	},
+	{
+		"klv sync",
+		&Track{
+			PID: 257,
+			Codec: &codecs.KLV{
+				Synchronous: true,
+			},
+		},
+		[]sample{
+			{
+				30 * 90000,
+				30 * 90000,
+				[][]byte{{1, 2, 3}},
+			},
+		},
+		[]*astits.Packet{
+			{ // PMT
+				Header: astits.PacketHeader{
+					HasPayload:                true,
+					PayloadUnitStartIndicator: true,
+					PID:                       0,
+				},
+				Payload: append([]byte{
+					0x00, 0x00, 0xb0, 0x0d, 0x00, 0x00, 0xc1, 0x00,
+					0x00, 0x00, 0x01, 0xf0, 0x00, 0x71, 0x10, 0xd8,
+					0x78,
+				}, bytes.Repeat([]byte{0xff}, 167)...),
+			},
+			{ // PAT
+				Header: astits.PacketHeader{
+					HasPayload:                true,
+					PayloadUnitStartIndicator: true,
+					PID:                       4096,
+				},
+				Payload: append([]byte{
+					0x00, 0x02, 0xb0, 0x28, 0x00, 0x01, 0xc1, 0x00,
+					0x00, 0xe1, 0x01, 0xf0, 0x00, 0x15, 0xe1, 0x01,
+					0xf0, 0x16, 0x26, 0x09, 0x01, 0x00, 0xff, 0x4b,
+					0x4c, 0x56, 0x41, 0x00, 0x0f, 0x27, 0x09, 0xc0,
+					0x00, 0x00, 0xc0, 0x00, 0x00, 0xc0, 0x00, 0x00,
+					0x4c, 0x5c, 0xe5, 0x50,
+				}, bytes.Repeat([]byte{0xff}, 140)...),
+			},
+			{ // PES
+				AdaptationField: &astits.PacketAdaptationField{
+					Length:                161,
+					StuffingLength:        154,
+					RandomAccessIndicator: true,
+					HasPCR:                true,
+					PCR:                   &astits.ClockReference{Base: 2691000},
+				},
+				Header: astits.PacketHeader{
+					HasAdaptationField:        true,
+					HasPayload:                true,
+					PayloadUnitStartIndicator: true,
+					PID:                       257,
+				},
+				Payload: []byte{
+					0x00, 0x00, 0x01, 0xfc, 0x00, 0x10, 0x80, 0x80,
+					0x05, 0x21, 0x00, 0xa5, 0x65, 0xc1, 0x00, 0x00,
+					0xdf, 0x00, 0x03, 0x01, 0x02, 0x03,
+				},
+			},
+		},
+	},
+	{
+		"dvb subtitles",
+		&Track{
+			PID: 257,
+			Codec: &codecs.DVBSubtitle{
+				Items: []*astits.DescriptorSubtitlingItem{
+					{
+						AncillaryPageID:   123,
+						CompositionPageID: 456,
+						Language:          []byte{1, 2, 3},
+						Type:              22,
+					},
+					{
+						AncillaryPageID:   33,
+						CompositionPageID: 12,
+						Language:          []byte{'a', 'b', 'c'},
+						Type:              15,
+					},
+				},
+			},
+		},
+		[]sample{
+			{
+				30 * 90000,
+				30 * 90000,
+				[][]byte{{1, 2, 3}},
+			},
+		},
+		[]*astits.Packet{
+			{ // PMT
+				Header: astits.PacketHeader{
+					HasPayload:                true,
+					PayloadUnitStartIndicator: true,
+					PID:                       0,
+				},
+				Payload: append([]byte{
+					0x00, 0x00, 0xb0, 0x0d, 0x00, 0x00, 0xc1, 0x00,
+					0x00, 0x00, 0x01, 0xf0, 0x00, 0x71, 0x10, 0xd8,
+					0x78,
+				}, bytes.Repeat([]byte{0xff}, 167)...),
+			},
+			{ // PAT
+				Header: astits.PacketHeader{
+					HasPayload:                true,
+					PayloadUnitStartIndicator: true,
+					PID:                       4096,
+				},
+				Payload: append([]byte{
+					0x00, 0x02, 0xb0, 0x24, 0x00, 0x01, 0xc1, 0x00,
+					0x00, 0xe1, 0x01, 0xf0, 0x00, 0x06, 0xe1, 0x01,
+					0xf0, 0x12, 0x59, 0x10, 0x01, 0x02, 0x03, 0x16,
+					0x01, 0xc8, 0x00, 0x7b, 0x61, 0x62, 0x63, 0x0f,
+					0x00, 0x0c, 0x00, 0x21, 0xc2, 0xdc, 0x16, 0x2a,
+				}, bytes.Repeat([]byte{0xff}, 144)...),
+			},
+			{ // PES
+				AdaptationField: &astits.PacketAdaptationField{
+					Length:                166,
+					StuffingLength:        159,
+					RandomAccessIndicator: true,
+					HasPCR:                true,
+					PCR:                   &astits.ClockReference{Base: 2691000},
+				},
+				Header: astits.PacketHeader{
+					HasAdaptationField:        true,
+					HasPayload:                true,
+					PayloadUnitStartIndicator: true,
+					PID:                       257,
+				},
+				Payload: []byte{
+					0x00, 0x00, 0x01, 0xbd, 0x00, 0x0b, 0x80, 0x80,
+					0x05, 0x21, 0x00, 0xa5, 0x65, 0xc1, 0x01, 0x02,
+					0x03,
+				},
+			},
+		},
+	},
 }
 
 func TestReader(t *testing.T) {
@@ -870,8 +1162,8 @@ func TestReader(t *testing.T) {
 			i := 0
 
 			switch ca.track.Codec.(type) {
-			case *CodecH265, *CodecH264:
-				r.OnDataH26x(ca.track, func(pts int64, dts int64, au [][]byte) error {
+			case *codecs.H265:
+				r.OnDataH265(ca.track, func(pts int64, dts int64, au [][]byte) error {
 					require.Equal(t, ca.samples[i].pts, pts)
 					require.Equal(t, ca.samples[i].dts, dts)
 					require.Equal(t, ca.samples[i].data, au)
@@ -879,7 +1171,16 @@ func TestReader(t *testing.T) {
 					return nil
 				})
 
-			case *CodecMPEG4Video:
+			case *codecs.H264:
+				r.OnDataH264(ca.track, func(pts int64, dts int64, au [][]byte) error {
+					require.Equal(t, ca.samples[i].pts, pts)
+					require.Equal(t, ca.samples[i].dts, dts)
+					require.Equal(t, ca.samples[i].data, au)
+					i++
+					return nil
+				})
+
+			case *codecs.MPEG4Video:
 				r.OnDataMPEGxVideo(ca.track, func(pts int64, frame []byte) error {
 					require.Equal(t, ca.samples[i].pts, pts)
 					require.Equal(t, ca.samples[i].data[0], frame)
@@ -887,7 +1188,7 @@ func TestReader(t *testing.T) {
 					return nil
 				})
 
-			case *CodecMPEG1Video:
+			case *codecs.MPEG1Video:
 				r.OnDataMPEGxVideo(ca.track, func(pts int64, frame []byte) error {
 					require.Equal(t, ca.samples[i].pts, pts)
 					require.Equal(t, ca.samples[i].data[0], frame)
@@ -895,7 +1196,7 @@ func TestReader(t *testing.T) {
 					return nil
 				})
 
-			case *CodecOpus:
+			case *codecs.Opus:
 				r.OnDataOpus(ca.track, func(pts int64, packets [][]byte) error {
 					require.Equal(t, ca.samples[i].pts, pts)
 					require.Equal(t, ca.samples[i].data, packets)
@@ -903,7 +1204,7 @@ func TestReader(t *testing.T) {
 					return nil
 				})
 
-			case *CodecMPEG4Audio:
+			case *codecs.MPEG4Audio:
 				r.OnDataMPEG4Audio(ca.track, func(pts int64, aus [][]byte) error {
 					require.Equal(t, ca.samples[i].pts, pts)
 					require.Equal(t, ca.samples[i].data, aus)
@@ -911,7 +1212,15 @@ func TestReader(t *testing.T) {
 					return nil
 				})
 
-			case *CodecMPEG1Audio:
+			case *codecs.MPEG4AudioLATM:
+				r.OnDataMPEG4AudioLATM(ca.track, func(pts int64, aus [][]byte) error {
+					require.Equal(t, ca.samples[i].pts, pts)
+					require.Equal(t, ca.samples[i].data, aus)
+					i++
+					return nil
+				})
+
+			case *codecs.MPEG1Audio:
 				r.OnDataMPEG1Audio(ca.track, func(pts int64, frames [][]byte) error {
 					require.Equal(t, ca.samples[i].pts, pts)
 					require.Equal(t, ca.samples[i].data, frames)
@@ -919,7 +1228,7 @@ func TestReader(t *testing.T) {
 					return nil
 				})
 
-			case *CodecAC3:
+			case *codecs.AC3:
 				r.OnDataAC3(ca.track, func(pts int64, frame []byte) error {
 					require.Equal(t, ca.samples[i].pts, pts)
 					require.Equal(t, ca.samples[i].data[0], frame)
@@ -927,13 +1236,37 @@ func TestReader(t *testing.T) {
 					return nil
 				})
 
+			case *codecs.EAC3:
+				r.OnDataEAC3(ca.track, func(pts int64, frame []byte) error {
+					require.Equal(t, ca.samples[i].pts, pts)
+					require.Equal(t, ca.samples[i].data[0], frame)
+					i++
+					return nil
+				})
+
+			case *codecs.KLV:
+				r.OnDataKLV(ca.track, func(pts int64, frame []byte) error {
+					require.Equal(t, ca.samples[i].pts, pts)
+					require.Equal(t, ca.samples[i].data[0], frame)
+					i++
+					return nil
+				})
+
+			case *codecs.DVBSubtitle:
+				r.OnDataDVBSubtitle(ca.track, func(pts int64, data []byte) error {
+					require.Equal(t, ca.samples[i].pts, pts)
+					require.Equal(t, ca.samples[i].data[0], data)
+					i++
+					return nil
+				})
+
 			default:
-				t.Errorf("unexpected")
+				panic("unexpected")
 			}
 
 			for {
-				err := r.Read()
-				if errors.Is(err, astits.ErrNoMorePackets) {
+				err = r.Read()
+				if errors.Is(err, io.EOF) {
 					break
 				}
 				require.NoError(t, err)
@@ -942,6 +1275,132 @@ func TestReader(t *testing.T) {
 			require.Equal(t, len(ca.samples), i)
 		})
 	}
+}
+
+func TestReaderKLVAsync(t *testing.T) {
+	input := []*astits.Packet{
+		{ // PMT
+			Header: astits.PacketHeader{
+				HasPayload:                true,
+				PayloadUnitStartIndicator: true,
+			},
+			Payload: append(
+				[]byte{
+					0x00, 0x00, 0xb0, 0x0d, 0x00, 0x00, 0xc1, 0x00,
+					0x00, 0x00, 0x01, 0xf0, 0x00, 0x71, 0x10, 0xd8,
+					0x78,
+				},
+				bytes.Repeat([]byte{0xff}, 167)...,
+			),
+		},
+		{ // PAT
+			Header: astits.PacketHeader{
+				HasPayload:                true,
+				PayloadUnitStartIndicator: true,
+				PID:                       4096,
+			},
+			Payload: append(
+				[]byte{
+					0x00, 0x02, 0xb0, 0x1d, 0x00, 0x01, 0xc1, 0x00,
+					0x00, 0xe1, 0x00, 0xf0, 0x00, 0x1b, 0xe1, 0x00,
+					0xf0, 0x00, 0x06, 0xe1, 0x01, 0xf0, 0x06, 0x05,
+					0x04, 0x4b, 0x4c, 0x56, 0x41, 0x06, 0x71, 0x49,
+					0xd4,
+				},
+				bytes.Repeat([]byte{0xff}, 151)...,
+			),
+		},
+		{ // H264 PES
+			Header: astits.PacketHeader{
+				HasPayload:                true,
+				PayloadUnitStartIndicator: true,
+				PID:                       256,
+				HasAdaptationField:        true,
+			},
+			AdaptationField: &astits.PacketAdaptationField{
+				PCR: &astits.ClockReference{
+					Base: 81000,
+				},
+				Length:         155,
+				StuffingLength: 148,
+				HasPCR:         true,
+			},
+			Payload: []byte{
+				0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x80,
+				0x05, 0x21, 0x00, 0x05, 0xbf, 0x21, 0x00, 0x00,
+				0x00, 0x01, 0x09, 0xf0, 0x00, 0x00, 0x00, 0x01,
+				0x01, 0x02, 0x03, 0x04,
+			},
+		},
+		{ // KLV PES
+			Header: astits.PacketHeader{
+				HasAdaptationField:        true,
+				HasPayload:                true,
+				PayloadUnitStartIndicator: true,
+				PID:                       257,
+			},
+			AdaptationField: &astits.PacketAdaptationField{
+				Length:                170,
+				StuffingLength:        169,
+				RandomAccessIndicator: true,
+			},
+			Payload: []byte{
+				0x00, 0x00, 0x01, 0xbd, 0x00, 0x07, 0x80, 0x00,
+				0x00, 0x05, 0x06, 0x07, 0x08,
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	mux := astits.NewMuxer(context.Background(), &buf)
+
+	for _, packet := range input {
+		_, err := mux.WritePacket(packet)
+		require.NoError(t, err)
+	}
+
+	r, err := NewReader(&buf)
+	require.NoError(t, err)
+	require.Equal(t, []*Track{
+		{
+			PID:   256,
+			Codec: &codecs.H264{},
+		},
+		{
+			PID: 257,
+			Codec: &codecs.KLV{
+				Synchronous: false,
+			},
+		},
+	}, r.Tracks())
+
+	recv1 := false
+	recv2 := false
+
+	r.OnDataH264(r.Tracks()[0], func(pts int64, _ int64, au [][]byte) error {
+		require.Equal(t, int64(90000), pts)
+		require.Equal(t, [][]byte{{1, 2, 3, 4}}, au)
+		recv1 = true
+		return nil
+	})
+
+	r.OnDataKLV(r.Tracks()[1], func(pts int64, data []byte) error {
+		require.Equal(t, int64(90000), pts)
+		require.Equal(t, []byte{5, 6, 7, 8}, data)
+		recv2 = true
+		return nil
+	})
+
+	for {
+		err = r.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		require.NoError(t, err)
+	}
+
+	require.True(t, recv1)
+	require.True(t, recv2)
 }
 
 func TestReaderDecodeErrors(t *testing.T) {
@@ -954,14 +1413,13 @@ func TestReaderDecodeErrors(t *testing.T) {
 		"mpeg-4 audio invalid",
 		"mpeg-1 audio pts != dts",
 		"ac-3 pts != dts",
-		"garbage",
 	} {
 		t.Run(ca, func(t *testing.T) {
 			var buf bytes.Buffer
 			mux := astits.NewMuxer(context.Background(), &buf)
 
 			switch ca {
-			case "missing pts", "h26x invalid avcc", "garbage":
+			case "missing pts", "h26x invalid avcc":
 				err := mux.AddElementaryStream(astits.PMTElementaryStream{
 					ElementaryPID: 123,
 					StreamType:    astits.StreamTypeH264Video,
@@ -1070,10 +1528,11 @@ func TestReaderDecodeErrors(t *testing.T) {
 
 			case "mpeg-4 audio pts != dts":
 				data, _ := mpeg4audio.ADTSPackets{{
-					Type:         mpeg4audio.ObjectTypeAACLC,
-					SampleRate:   44100,
-					ChannelCount: 1,
-					AU:           []byte{1, 2, 3, 4},
+					Type:          mpeg4audio.ObjectTypeAACLC,
+					SampleRate:    44100,
+					ChannelConfig: 1,
+					ChannelCount:  1,
+					AU:            []byte{1, 2, 3, 4},
 				}}.Marshal()
 
 				_, err := mux.WriteData(&astits.MuxerData{
@@ -1112,10 +1571,11 @@ func TestReaderDecodeErrors(t *testing.T) {
 
 			case "mpeg-4 audio invalid":
 				data, _ := mpeg4audio.ADTSPackets{{
-					Type:         mpeg4audio.ObjectTypeAACLC,
-					SampleRate:   44100,
-					ChannelCount: 1,
-					AU:           []byte{1, 2, 3, 4},
+					Type:          mpeg4audio.ObjectTypeAACLC,
+					SampleRate:    44100,
+					ChannelConfig: 1,
+					ChannelCount:  1,
+					AU:            []byte{1, 2, 3, 4},
 				}}.Marshal()
 
 				_, err := mux.WriteData(&astits.MuxerData{
@@ -1190,51 +1650,14 @@ func TestReaderDecodeErrors(t *testing.T) {
 					},
 				})
 				require.NoError(t, err)
-
-			case "garbage":
-				_, err := mux.WriteData(&astits.MuxerData{
-					PID: 123,
-					PES: &astits.PESData{
-						Header: &astits.PESHeader{
-							OptionalHeader: &astits.PESOptionalHeader{
-								MarkerBits:      2,
-								PTSDTSIndicator: astits.PTSDTSIndicatorOnlyPTS,
-								PTS:             &astits.ClockReference{Base: 90000},
-							},
-							StreamID: streamIDVideo,
-						},
-						Data: []byte{0, 0, 0, 1, 1, 2, 3, 4},
-					},
-				})
-				require.NoError(t, err)
-
-				buf.Write(bytes.Repeat([]byte{1, 2, 3, 4}, 188/4))
-
-				_, err = mux.WriteData(&astits.MuxerData{
-					PID: 123,
-					PES: &astits.PESData{
-						Header: &astits.PESHeader{
-							OptionalHeader: &astits.PESOptionalHeader{
-								MarkerBits:      2,
-								PTSDTSIndicator: astits.PTSDTSIndicatorOnlyPTS,
-								PTS:             &astits.ClockReference{Base: 90000},
-							},
-							StreamID: streamIDVideo,
-						},
-						Data: []byte{0, 0, 0, 1, 1, 2, 3, 4},
-					},
-				})
-				require.NoError(t, err)
 			}
 
 			r, err := NewReader(bytes.NewReader(buf.Bytes()))
 			require.NoError(t, err)
 
-			dataRecv := false
-
 			switch ca {
 			case "missing pts", "h26x invalid avcc":
-				r.OnDataH26x(r.Tracks()[0], func(_, _ int64, _ [][]byte) error {
+				r.OnDataH264(r.Tracks()[0], func(_, _ int64, _ [][]byte) error {
 					return nil
 				})
 
@@ -1257,16 +1680,6 @@ func TestReaderDecodeErrors(t *testing.T) {
 				r.OnDataAC3(r.Tracks()[0], func(_ int64, _ []byte) error {
 					return nil
 				})
-
-			case "garbage":
-				counter := 0
-				r.OnDataH26x(r.Tracks()[0], func(_, _ int64, _ [][]byte) error {
-					counter++
-					if counter == 2 {
-						dataRecv = true
-					}
-					return nil
-				})
 			}
 
 			decodeErrRecv := false
@@ -1287,30 +1700,189 @@ func TestReaderDecodeErrors(t *testing.T) {
 
 				case "mpeg-4 audio invalid":
 					require.EqualError(t, err, "invalid ADTS: invalid length")
-
-				case "garbage":
-					require.EqualError(t, err, "astits: fetching next packet failed:"+
-						" astits: fetching next packet from buffer failed:"+
-						" astits: building packet failed: astits: packet must start with a sync byte")
 				}
 				decodeErrRecv = true
 			})
 
 			for {
-				err := r.Read()
+				err = r.Read()
 				if err != nil {
-					require.Equal(t, astits.ErrNoMorePackets, err)
+					require.ErrorIs(t, io.EOF, err)
 					break
 				}
 			}
 
 			require.Equal(t, true, decodeErrRecv)
-
-			if ca == "garbage" {
-				require.Equal(t, true, dataRecv)
-			}
 		})
 	}
+}
+
+var errCustom = errors.New("custom error")
+
+type dummyReader struct{}
+
+func (dummyReader) Read(_ []byte) (int, error) {
+	return 0, errCustom
+}
+
+func TestReaderFatalError(t *testing.T) {
+	_, err := NewReader(&dummyReader{})
+	require.Equal(t, errCustom, err)
+}
+
+func TestReaderSkipGarbage(t *testing.T) {
+	var buf bytes.Buffer
+	mux := astits.NewMuxer(context.Background(), &buf)
+
+	err := mux.AddElementaryStream(astits.PMTElementaryStream{
+		ElementaryPID: 123,
+		StreamType:    astits.StreamTypeH264Video,
+	})
+	require.NoError(t, err)
+
+	mux.SetPCRPID(123)
+
+	_, err = mux.WriteData(&astits.MuxerData{
+		PID: 123,
+		PES: &astits.PESData{
+			Header: &astits.PESHeader{
+				OptionalHeader: &astits.PESOptionalHeader{
+					MarkerBits:      2,
+					PTSDTSIndicator: astits.PTSDTSIndicatorOnlyPTS,
+					PTS:             &astits.ClockReference{Base: 90000},
+				},
+				StreamID: streamIDVideo,
+			},
+			Data: []byte{0, 0, 0, 1, 1, 2, 3, 4},
+		},
+	})
+	require.NoError(t, err)
+
+	// complete random garbage
+	buf.Write(bytes.Repeat([]byte{1, 2, 3, 4}, 200/4))
+
+	_, err = mux.WriteData(&astits.MuxerData{
+		PID: 123,
+		PES: &astits.PESData{
+			Header: &astits.PESHeader{
+				OptionalHeader: &astits.PESOptionalHeader{
+					MarkerBits:      2,
+					PTSDTSIndicator: astits.PTSDTSIndicatorOnlyPTS,
+					PTS:             &astits.ClockReference{Base: 90000},
+				},
+				StreamID: streamIDVideo,
+			},
+			Data: []byte{0, 0, 0, 1, 5, 6, 7, 8},
+		},
+	})
+	require.NoError(t, err)
+
+	// this is eaten by the next garbage
+	_, err = mux.WriteData(&astits.MuxerData{
+		PID: 123,
+		PES: &astits.PESData{
+			Header: &astits.PESHeader{
+				OptionalHeader: &astits.PESOptionalHeader{
+					MarkerBits:      2,
+					PTSDTSIndicator: astits.PTSDTSIndicatorOnlyPTS,
+					PTS:             &astits.ClockReference{Base: 90000},
+				},
+				StreamID: streamIDVideo,
+			},
+			Data: []byte{0, 0, 0, 1, 9, 10, 11, 12},
+		},
+	})
+	require.NoError(t, err)
+
+	// syncword-prefixed garbage
+	buf.Write([]byte{0x47})
+	buf.Write(bytes.Repeat([]byte{1}, 100))
+
+	// this is eaten by the previous garbage
+	_, err = mux.WriteData(&astits.MuxerData{
+		PID: 123,
+		PES: &astits.PESData{
+			Header: &astits.PESHeader{
+				OptionalHeader: &astits.PESOptionalHeader{
+					MarkerBits:      2,
+					PTSDTSIndicator: astits.PTSDTSIndicatorOnlyPTS,
+					PTS:             &astits.ClockReference{Base: 90000},
+				},
+				StreamID: streamIDVideo,
+			},
+			Data: []byte{0, 0, 0, 1, 13, 14, 15, 16},
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = mux.WriteData(&astits.MuxerData{
+		PID: 123,
+		PES: &astits.PESData{
+			Header: &astits.PESHeader{
+				OptionalHeader: &astits.PESOptionalHeader{
+					MarkerBits:      2,
+					PTSDTSIndicator: astits.PTSDTSIndicatorOnlyPTS,
+					PTS:             &astits.ClockReference{Base: 90000},
+				},
+				StreamID: streamIDVideo,
+			},
+			Data: []byte{0, 0, 0, 1, 17, 18, 19, 20},
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = mux.WriteData(&astits.MuxerData{
+		PID: 123,
+		PES: &astits.PESData{
+			Header: &astits.PESHeader{
+				OptionalHeader: &astits.PESOptionalHeader{
+					MarkerBits:      2,
+					PTSDTSIndicator: astits.PTSDTSIndicatorOnlyPTS,
+					PTS:             &astits.ClockReference{Base: 90000},
+				},
+				StreamID: streamIDVideo,
+			},
+			Data: []byte{0, 0, 0, 1, 21, 22, 23, 24},
+		},
+	})
+	require.NoError(t, err)
+
+	r, err := NewReader(bytes.NewReader(buf.Bytes()))
+	require.NoError(t, err)
+
+	var decErrs []string
+
+	r.OnDecodeError(func(err error) {
+		decErrs = append(decErrs, err.Error())
+	})
+
+	var aus [][][]byte
+
+	r.OnDataH264(r.Tracks()[0], func(_, _ int64, au [][]byte) error {
+		aus = append(aus, au)
+		return nil
+	})
+
+	for {
+		err = r.Read()
+		if err != nil {
+			require.ErrorIs(t, io.EOF, err)
+			break
+		}
+	}
+
+	require.Equal(t, []string{
+		"skipped 188 bytes",
+		"skipped 12 bytes",
+		"skipped 101 bytes",
+	}, decErrs)
+
+	require.Equal(t, [][][]byte{
+		{{1, 2, 3, 4}},
+		{{5, 6, 7, 8}},
+		{{17, 18, 19, 20}},
+		{{21, 22, 23, 24}},
+	}, aus)
 }
 
 func FuzzReader(f *testing.F) {
@@ -1423,7 +1995,13 @@ func FuzzReader(f *testing.F) {
 		0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
 	})
 
-	f.Fuzz(func(_ *testing.T, b []byte) {
-		NewReader(bytes.NewReader(b)) //nolint:errcheck
+	f.Fuzz(func(t *testing.T, b []byte) {
+		r := &Reader{R: bytes.NewReader(b)}
+		err := r.Initialize()
+		if err != nil {
+			return
+		}
+
+		require.NotZero(t, len(r.Tracks()))
 	})
 }

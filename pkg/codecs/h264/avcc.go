@@ -8,18 +8,20 @@ import (
 // ErrAVCCNoNALUs is returned by AVCCUnmarshal when no NALUs have been decoded.
 var ErrAVCCNoNALUs = errors.New("AVCC unit doesn't contain any NALU")
 
-// AVCCUnmarshal decodes an access unit from the AVCC stream format.
+// AVCC is an access unit that can be decoded/encoded from/to the Annex-B stream format.
 // Specification: ISO 14496-15, section 5.3.4.2.1
-func AVCCUnmarshal(buf []byte) ([][]byte, error) {
+type AVCC [][]byte
+
+// Unmarshal decodes an access unit from the AVCC stream format.
+func (a *AVCC) Unmarshal(buf []byte) error {
 	bl := len(buf)
 	pos := 0
-	var ret [][]byte
-	naluCount := 0
+	n := 0
 	auSize := 0
 
 	for {
 		if (bl - pos) < 4 {
-			return nil, fmt.Errorf("invalid length")
+			return fmt.Errorf("invalid length")
 		}
 
 		l := int(uint32(buf[pos])<<24 | uint32(buf[pos+1])<<16 | uint32(buf[pos+2])<<8 | uint32(buf[pos+3]))
@@ -27,21 +29,15 @@ func AVCCUnmarshal(buf []byte) ([][]byte, error) {
 
 		if l != 0 {
 			if (auSize + l) > MaxAccessUnitSize {
-				return nil, fmt.Errorf("access unit size (%d) is too big, maximum is %d", auSize+l, MaxAccessUnitSize)
-			}
-
-			if (naluCount + 1) > MaxNALUsPerAccessUnit {
-				return nil, fmt.Errorf("NALU count (%d) exceeds maximum allowed (%d)",
-					len(ret)+1, MaxNALUsPerAccessUnit)
+				return fmt.Errorf("access unit size (%d) is too big, maximum is %d", auSize+l, MaxAccessUnitSize)
 			}
 
 			if (bl - pos) < l {
-				return nil, fmt.Errorf("invalid length")
+				return fmt.Errorf("invalid length")
 			}
 
-			ret = append(ret, buf[pos:pos+l])
 			auSize += l
-			naluCount++
+			n++
 			pos += l
 		}
 
@@ -50,28 +46,46 @@ func AVCCUnmarshal(buf []byte) ([][]byte, error) {
 		}
 	}
 
-	if ret == nil {
-		return nil, ErrAVCCNoNALUs
+	if n == 0 {
+		return ErrAVCCNoNALUs
 	}
 
-	return ret, nil
+	if n > MaxNALUsPerAccessUnit {
+		return fmt.Errorf("NALU count (%d) exceeds maximum allowed (%d)",
+			n, MaxNALUsPerAccessUnit)
+	}
+
+	*a = make([][]byte, n)
+	pos = 0
+
+	for i := 0; i < n; {
+		l := int(uint32(buf[pos])<<24 | uint32(buf[pos+1])<<16 | uint32(buf[pos+2])<<8 | uint32(buf[pos+3]))
+		pos += 4
+
+		if l != 0 {
+			(*a)[i] = buf[pos : pos+l]
+			pos += l
+			i++
+		}
+	}
+
+	return nil
 }
 
-func avccMarshalSize(au [][]byte) int {
+func (a AVCC) marshalSize() int {
 	n := 0
-	for _, nalu := range au {
+	for _, nalu := range a {
 		n += 4 + len(nalu)
 	}
 	return n
 }
 
-// AVCCMarshal encodes an access unit into the AVCC stream format.
-// Specification: ISO 14496-15, section 5.3.4.2.1
-func AVCCMarshal(au [][]byte) ([]byte, error) {
-	buf := make([]byte, avccMarshalSize(au))
+// Marshal encodes an access unit into the AVCC stream format.
+func (a AVCC) Marshal() ([]byte, error) {
+	buf := make([]byte, a.marshalSize())
 	pos := 0
 
-	for _, nalu := range au {
+	for _, nalu := range a {
 		naluLen := len(nalu)
 		buf[pos] = byte(naluLen >> 24)
 		buf[pos+1] = byte(naluLen >> 16)

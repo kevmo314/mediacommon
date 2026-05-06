@@ -3,7 +3,7 @@ package ac3
 import (
 	"fmt"
 
-	"github.com/bluenviron/mediacommon/pkg/bits"
+	"github.com/bluenviron/mediacommon/v2/pkg/bits"
 )
 
 // BSI is a Bit Stream Information.
@@ -22,8 +22,8 @@ func (b *BSI) Unmarshal(buf []byte) error {
 	}
 
 	b.Bsid = buf[0] >> 3
-	if b.Bsid != 0x08 {
-		return fmt.Errorf("invalid bsid")
+	if b.Bsid > 8 {
+		return fmt.Errorf("unsupported bsid: %v", b.Bsid)
 	}
 
 	b.Bsmod = buf[0] & 0b111
